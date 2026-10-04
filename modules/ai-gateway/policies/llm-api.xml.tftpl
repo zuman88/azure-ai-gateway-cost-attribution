@@ -398,7 +398,16 @@
          by the gateway itself and shared across requests.
          ============================================================================================ -->
     <set-backend-service backend-id='@((string)context.Variables["targetPool"])' />
-    <rewrite-uri template='@("/openai/v1" + context.Operation.UrlTemplate)' copy-unmatched-params="false" />
+
+    <!-- The rewritten path is appended to the backend URL, and every Foundry backend is already
+         registered as "<inference_url>/openai/v1". Prepending the Foundry path again here would
+         produce ".../openai/v1/openai/v1/chat/completions" and 404 every request. Only the operation
+         template belongs in this template.
+
+         This is also what keeps the gateway's published api_path independent of Foundry's: the path
+         callers use is a property of the API, while /openai/v1 is a property of the backend. Neither
+         is hard-coded into the other. -->
+    <rewrite-uri template='@(context.Operation.UrlTemplate)' copy-unmatched-params="false" />
   </inbound>
 
   <backend>

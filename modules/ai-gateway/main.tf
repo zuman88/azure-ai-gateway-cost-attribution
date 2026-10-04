@@ -680,3 +680,27 @@ resource "azurerm_role_assignment" "gateway_to_foundry" {
   principal_id                     = local.apim_principal_id
   skip_service_principal_aad_check = true
 }
+
+# ---------------------------------------------------------------------------------------------------
+# Diagnostics
+#
+# GatewayLogs is the per-request record: which operation, which backend, which subscription, the
+# response code and the latency. The token metrics the policy emits are aggregates and cannot answer
+# "what happened to that one request at 14:07" - this can, and it is the log the cost-attribution
+# telemetry_gap alert is implicitly reasoning about.
+# ---------------------------------------------------------------------------------------------------
+resource "azurerm_monitor_diagnostic_setting" "apim" {
+  count = var.log_analytics_workspace_id != null ? 1 : 0
+
+  name                       = "diag-to-law"
+  target_resource_id         = local.apim_id
+  log_analytics_workspace_id = var.log_analytics_workspace_id
+
+  enabled_log {
+    category = "GatewayLogs"
+  }
+
+  enabled_metric {
+    category = "AllMetrics"
+  }
+}
