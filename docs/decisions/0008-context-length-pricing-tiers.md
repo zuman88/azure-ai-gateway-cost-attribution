@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-04
-- **Related:** ADR-0005 (cost attribution model)
+- **Related:** ADR-0004 (the ratio-allocation chargeback model these rates feed), ADR-0005 (the ledger trace that carries `contextTier`)
 
 ## Context
 

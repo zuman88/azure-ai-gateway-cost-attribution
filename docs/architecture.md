@@ -289,7 +289,9 @@ flowchart TB
     CHARGE --> WB["Workbook · budgets · anomaly alerts"]
 ```
 
-This "**ratio allocation**" model is materially more defensible than publishing gateway-estimated dollars as if they were the invoice. Gateway estimates drift from the invoice for entirely legitimate reasons: negotiated discounts, reservations, PTU amortization, commitment tiers, and mid-month price changes. Ratio allocation is immune to all of them — if your gateway says App A consumed 30% of `gpt-4o` input tokens, App A is charged 30% of the actual `gpt-4o` input meter, whatever that turned out to be.
+This "**ratio allocation**" model is materially more defensible than publishing gateway-estimated dollars as if they were the invoice. Gateway estimates drift from the invoice for entirely legitimate reasons: negotiated discounts, reservations, PTU amortization, commitment tiers, and mid-month price changes. Ratio allocation is immune to all of them — if your gateway says App A consumed 30% of the tokens, App A is charged 30% of the actual spend, whatever that turned out to be.
+
+The shipped workbook allocates on each consumer's **share of total tokens** across all models, not per meter. Per-meter allocation would be more precise where consumers use different model mixes — an output token on a premium model costs many times an input token on a small one — and it is the natural next refinement. It is not what the workbook does today.
 
 The accelerator publishes **both** numbers and the variance between them. A persistent variance is a signal that your pricing map is stale.
 
@@ -353,9 +355,9 @@ The Responses API reports the same data under different names (`input_tokens`, `
 
 ### 4.4 Keeping the pricing map honest
 
-`scripts/generate_pricing_map.py` queries the **Azure Retail Prices API** (`https://prices.azure.com/api/retail/prices`) and renders a pricing map, so the rates in your gateway are derived from a Microsoft-published source rather than hand-typed from a blog post. A scheduled GitHub Actions workflow re-runs it and opens a pull request when rates move.
+`scripts/generate_pricing_map.py` queries the **Azure Retail Prices API** (`https://prices.azure.com/api/retail/prices`) and renders a pricing map, so the rates in your gateway are derived from a Microsoft-published source rather than hand-typed from a blog post. Run it on a cadence that matches how often you care about drift; scheduling it in CI to open a pull request when rates move is a natural extension and is on the roadmap rather than in the box.
 
-Retail prices are list prices. If the customer has an Enterprise Agreement or MCA discount, the reconciliation loop in §4.1 corrects for it automatically, and `scripts/reconcile_costs.py` reports the effective discount it observed.
+Retail prices are list prices. If the customer has an Enterprise Agreement or MCA discount, the ratio allocation in §4.1 corrects for it: you enter the actual figure from Cost Management and the workbook divides it by measured consumption, so the discount is inherited rather than modelled. The variance between estimate and actual is itself the signal — a persistent gap in the same direction is your effective discount.
 
 #### Context-length pricing
 
@@ -531,7 +533,7 @@ Where data residency is a constraint, deploy one gateway per data zone and use `
 | Retiring a model | Point the alias at a new deployment. Clients are unaffected. |
 | Regional outage | Circuit breakers trip automatically; traffic moves to the next priority group. Alert fires on breaker trips. |
 | Quota exhaustion | `403` with `Retry-After`; burn-down visible in the workbook before it happens. |
-| Price change | Scheduled workflow opens a PR against the pricing map; variance alert catches anything missed. |
+| Price change | Re-run `generate_pricing_map.py` and commit the diff; the variance alert catches anything missed in the meantime. |
 | Policy change | Edit XML under `modules/ai-gateway/policies/`, run `terraform plan`, review the diff. |
 
 ---

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-04
 - **Supersedes:** nothing
-- **Related:** ADR-0004 (keyless access to Foundry), ADR-0005 (cost attribution model)
+- **Related:** ADR-0002 (keyless outbound access to Foundry), ADR-0004 (the chargeback model this identity keys), ADR-0005 (why no consumer dimension goes on the token metric)
 
 ## Context
 
