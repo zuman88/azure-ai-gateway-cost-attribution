@@ -125,7 +125,11 @@ The review threshold is deliberately *below* the lowest real boundary in use (27
 
 Per product, the percentage of `2xx` responses where `usageMeasured` is false.
 
-**What it means:** successful requests are returning no token counts, so their spend is real and entirely invisible to the ledger. The usual cause is a streaming caller whose response carried no `usage` block. The gateway already repairs the common case — §4 of the API policy forces `stream_options.include_usage` onto streamed requests that omit it — so a rising figure here points at something else: a stream terminated early, a response that was not JSON, or a non-2xx body that still looked successful.
+**What it means:** successful requests are returning no token counts, so their spend is real and entirely invisible to the ledger.
+
+**By far the most common cause is streaming.** The ledger is built from a parsed JSON response body, and a streamed response is `text/event-stream`, so every streamed request is recorded `usageMeasured = false` by design. This is not a misconfiguration you can tune away — it is the cost of letting tokens reach the client as they are generated, and the reasoning is in [§10 of the policy reference](policies.md). Streamed usage still reaches the token *metrics* through `llm-emit-token-metric`, so you can size the gap: compare metric tokens against ledger tokens for the same period.
+
+If the figure is high and your callers do **not** stream, look instead at a stream that terminated early, a response that was not JSON, or a non-2xx body that still looked successful.
 
 This matters more than it first appears. Ratio allocation redistributes the **entire** invoice across the consumers the ledger observed. A consumer whose requests were not recorded does not get a smaller share — it gets no share, and its spend is silently redistributed over everybody else, who are then over-charged. Unmeasured usage is a correctness failure that propagates into other consumers' bills, not a reporting inconvenience.
 

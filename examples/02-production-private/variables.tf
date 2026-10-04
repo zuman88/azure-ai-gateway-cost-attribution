@@ -163,7 +163,7 @@ variable "pricing_map" {
   description = <<-EOT
     Rates per million tokens, keyed by model alias. Generate it rather than typing it:
 
-      python scripts/generate_pricing_map.py --region eastus --alias chat=gpt-4o --alias embed=text-embedding-3-large
+      python scripts/generate_pricing_map.py --region eastus --alias chat=gpt-4.1 --alias embed=text-embedding-3-large
 
     An alias missing from this map is reported with a cost of -1, which shows up as "unpriced" in the
     workbook and raises an alert, rather than quietly contributing zero to the monthly total.

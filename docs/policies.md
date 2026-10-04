@@ -175,10 +175,17 @@ Resolves `requestedModel` against the route table named value into
 
 Rewrites the outbound body so that the alias is replaced by the real deployment
 name, and forces `stream_options.include_usage` on for streaming requests.
-That second part matters more than it looks: without it a streaming response
-carries no usage block, so the request produces no token counts, no metric and
-no ledger row. Forcing it is the difference between streaming traffic being
-measured and streaming traffic being invisible.
+Without it a streamed response carries no usage block at all, and
+`llm-emit-token-metric` has nothing to publish — so streaming traffic disappears
+from the token metrics entirely.
+
+Note what this does **not** do. It does not put streamed requests in the
+chargeback ledger. The ledger is built in §10 from a parsed JSON response body,
+and a streamed response is `text/event-stream`, so §10 skips it and records the
+request as `usageMeasured = false`. That is deliberate — see §10 — and it means
+streamed traffic is counted in the metrics but reported as *unmeasured*, not as
+zero, in the ledger. Unmeasured is visible and alertable; zero would silently
+under-bill every streaming consumer.
 
 ### §5 — Token metric emission
 
@@ -235,6 +242,27 @@ On the outbound path, reads token counts out of the response. It handles both
 the Chat Completions shape and the Responses API shape, because the two report
 usage under different field names. Cached and reasoning token counts are picked
 up here where the model supplies them.
+
+**The body read is wrapped in a `<choose>` on `isStreaming`, and that is load
+bearing.** An expression that reads `context.Response.Body` causes API
+Management to buffer the entire response before outbound policy runs — even if
+that expression returns early without ever touching the body. An earlier
+revision of this policy guarded on `Content-Type`, which meant a streamed
+response (`text/event-stream`, never `application/json`) provably never reached
+the body read. API Management buffered it anyway. Measured against a live
+deployment: Foundry streamed 50 chunks over 0.80 s while the gateway released
+all 50 within 1 ms. The buffering decision is made from the policy document, not
+from the path taken through it, so the element itself has to be skipped.
+
+Nothing is lost by skipping it. Because of that same `Content-Type` guard, a
+streamed request never produced usage here in the first place — the buffering
+was pure cost. Streamed requests are recorded `usageMeasured = false` and their
+token counts come from `llm-emit-token-metric`, which reads the final SSE chunk
+natively.
+
+The general rule, if you extend this policy: **anything that inspects the
+response body must be skipped for streaming requests, not merely guarded inside
+the expression.**
 
 ### §11 — Cost attribution
 

@@ -10,7 +10,7 @@ A resource group containing:
 
 | Module | What it creates here |
 |---|---|
-| [`foundry-models`](../../modules/foundry-models/) | One Foundry account in `location`, with `gpt-4o-mini` and `text-embedding-3-small` deployed at 50 capacity each on `GlobalStandard`. |
+| [`foundry-models`](../../modules/foundry-models/) | One Foundry account in `location`, with `gpt-4.1-mini` and `text-embedding-3-small` deployed at 50 capacity each on `GlobalStandard`. |
 | [`observability`](../../modules/observability/) | Log Analytics workspace (30-day retention) and Application Insights. |
 | [`ai-gateway`](../../modules/ai-gateway/) | API Management on `StandardV2_1`, the LLM API, backend pools, two products, one subscription, and the gateway policy. |
 

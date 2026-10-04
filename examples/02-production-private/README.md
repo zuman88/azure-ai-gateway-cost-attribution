@@ -10,7 +10,7 @@ Pick this one when the gateway is going to carry real traffic. It is the same mo
 |---|---|
 | [`networking`](../../modules/networking/) | VNet, an API Management subnet, a private endpoint subnet, the three Foundry private DNS zones, and optionally a NAT gateway for a stable egress address. |
 | [`observability`](../../modules/observability/) | Log Analytics workspace and Application Insights. |
-| [`foundry-models`](../../modules/foundry-models/) | **Two** accounts — `primary` and `secondary` — each with `public_network_access_enabled = false`, reached over private endpoints. Three deployments per account: `gpt-4o`, `gpt-4o-mini`, `text-embedding-3-large`. |
+| [`foundry-models`](../../modules/foundry-models/) | **Two** accounts — `primary` and `secondary` — each with `public_network_access_enabled = false`, reached over private endpoints. Three deployments per account: `gpt-4.1`, `gpt-4.1-mini`, `text-embedding-3-large`. |
 | [`ai-gateway`](../../modules/ai-gateway/) | API Management in the VNet, three aliases over backend pools, circuit breakers, three products, content safety, and the gateway policy. |
 | [`cost-attribution`](../../modules/cost-attribution/) | Chargeback workbook, Cost Management budget, and the alert rules. |
 
@@ -22,8 +22,8 @@ Both accounts deploy **identical deployment names**. This is not tidiness. A bac
 
 | Alias | Deployment | Behaviour |
 |---|---|---|
-| `chat` | `gpt-4o` | Primary first; secondary only once the primary's breaker trips. |
-| `chat-fast` | `gpt-4o-mini` | Both regions active, weighted 70/30. |
+| `chat` | `gpt-4.1` | Primary first; secondary only once the primary's breaker trips. |
+| `chat-fast` | `gpt-4.1-mini` | Both regions active, weighted 70/30. |
 | `embed` | `text-embedding-3-large` | Primary first, secondary on failover. |
 
 The circuit breaker trips after 5 failures in a minute across status codes 429–599, and **honours `Retry-After`**. Foundry answers a throttle with a `Retry-After` that can run to hours; honouring it is what stops the gateway queueing behind a backend that has already said no.
@@ -76,7 +76,7 @@ In practice you should also set, even though they have defaults: `name_prefix`, 
 `pricing_map` deserves particular attention: generate it rather than typing it.
 
 ```bash
-python ../../scripts/generate_pricing_map.py --region eastus2 --alias chat=gpt-4o --format hcl
+python ../../scripts/generate_pricing_map.py --region eastus2 --alias chat=gpt-4.1 --format hcl
 ```
 
 ## Outputs

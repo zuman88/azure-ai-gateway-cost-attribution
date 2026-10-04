@@ -25,12 +25,12 @@ foundry_resource_group_id = "/subscriptions/00000000-0000-0000-0000-000000000000
 foundry_backends = {
   "eastus" = {
     inference_url = "https://contoso-aif-eastus.openai.azure.com"
-    deployments   = ["gpt-4o", "gpt-4o-mini", "text-embedding-3-large"]
+    deployments   = ["gpt-4.1", "gpt-4.1-mini", "text-embedding-3-large"]
     description   = "Primary, East US"
   }
   "westeurope" = {
     inference_url = "https://contoso-aif-weu.openai.azure.com"
-    deployments   = ["gpt-4o", "gpt-4o-mini", "text-embedding-3-large"]
+    deployments   = ["gpt-4.1", "gpt-4.1-mini", "text-embedding-3-large"]
     description   = "Secondary, West Europe"
   }
 }
@@ -49,12 +49,12 @@ foundry_account_ids = {}
 # ---------------------------------------------------------------------------------------------------
 model_routes = {
   "chat" = {
-    deployment       = "gpt-4o"
+    deployment       = "gpt-4.1"
     description      = "Frontier chat model."
     backend_priority = { eastus = 1, westeurope = 2 }
   }
   "chat-fast" = {
-    deployment       = "gpt-4o-mini"
+    deployment       = "gpt-4.1-mini"
     description      = "Lower-cost chat, both regions active."
     backend_priority = { eastus = 1, westeurope = 1 }
     backend_weight   = { eastus = 70, westeurope = 30 }
@@ -121,7 +121,7 @@ consumers = {
 #
 # Regenerate rather than edit:
 #   python scripts/generate_pricing_map.py --region eastus \
-#     --alias chat=gpt-4o --alias chat-fast=gpt-4o-mini --alias embed=text-embedding-3-large \
+#     --alias chat=gpt-4.1 --alias chat-fast=gpt-4.1-mini --alias embed=text-embedding-3-large \
 #     --output pricing.auto.tfvars.json
 #
 # An alias missing here is reported with a cost of -1 and raises an alert, rather than quietly

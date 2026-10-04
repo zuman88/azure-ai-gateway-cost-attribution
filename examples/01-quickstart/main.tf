@@ -70,10 +70,17 @@ module "foundry" {
     }
   }
 
+  # Model versions rot, and they stop being deployable well before they stop serving traffic. Azure
+  # marks a version "deprecating" - rejecting new deployments with ServiceModelDeprecating - while the
+  # catalogue still advertises an inference date years away. Confirm what is deployable today before
+  # you run this:
+  #
+  #   az cognitiveservices model list --location <region> \
+  #     --query "[?kind=='AIServices' && model.format=='OpenAI'].{name:model.name,ver:model.version}" -o table
   model_deployments = {
-    "gpt-4o-mini" = {
-      model_name    = "gpt-4o-mini"
-      model_version = "2024-07-18"
+    "gpt-4.1-mini" = {
+      model_name    = "gpt-4.1-mini"
+      model_version = "2025-04-14"
       sku_name      = "GlobalStandard"
       capacity      = 50
     }
@@ -125,11 +132,11 @@ module "ai_gateway" {
   foundry_account_ids = module.foundry.account_ids
 
   # Aliases are the gateway's public contract. Applications code against "chat-small", not against
-  # "gpt-4o-mini", which is what makes it possible to change the model underneath without touching a
+  # "gpt-4.1-mini", which is what makes it possible to change the model underneath without touching a
   # single consumer.
   model_routes = {
     "chat-small" = {
-      deployment       = "gpt-4o-mini"
+      deployment       = "gpt-4.1-mini"
       description      = "General-purpose chat. Fast and inexpensive; the sensible default."
       backend_priority = { primary = 1 }
     }

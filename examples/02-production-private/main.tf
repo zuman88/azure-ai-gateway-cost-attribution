@@ -122,15 +122,15 @@ module "foundry" {
   }
 
   model_deployments = {
-    "gpt-4o" = {
-      model_name    = "gpt-4o"
-      model_version = "2024-11-20"
+    "gpt-4.1" = {
+      model_name    = "gpt-4.1"
+      model_version = "2025-04-14"
       sku_name      = "GlobalStandard"
       capacity      = var.chat_capacity
     }
-    "gpt-4o-mini" = {
-      model_name    = "gpt-4o-mini"
-      model_version = "2024-07-18"
+    "gpt-4.1-mini" = {
+      model_name    = "gpt-4.1-mini"
+      model_version = "2025-04-14"
       sku_name      = "GlobalStandard"
       capacity      = var.chat_mini_capacity
     }
@@ -177,7 +177,7 @@ module "ai_gateway" {
 
   model_routes = {
     "chat" = {
-      deployment  = "gpt-4o"
+      deployment  = "gpt-4.1"
       description = "Frontier chat model. Primary region first, secondary on breaker trip."
       backend_priority = {
         primary   = 1
@@ -185,7 +185,7 @@ module "ai_gateway" {
       }
     }
     "chat-fast" = {
-      deployment  = "gpt-4o-mini"
+      deployment  = "gpt-4.1-mini"
       description = "Lower-latency, lower-cost chat. Both regions active and load balanced."
       backend_priority = {
         primary   = 1

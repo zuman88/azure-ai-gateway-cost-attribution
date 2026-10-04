@@ -102,8 +102,8 @@ consumers = {
 #
 #   python scripts/generate_pricing_map.py \
 #     --region eastus \
-#     --alias chat=gpt-4o \
-#     --alias chat-fast=gpt-4o-mini \
+#     --alias chat=gpt-4.1 \
+#     --alias chat-fast=gpt-4.1-mini \
 #     --alias embed=text-embedding-3-large \
 #     --output pricing.auto.tfvars.json
 #

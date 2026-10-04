@@ -42,7 +42,7 @@ terraform apply
 Generate the pricing map rather than typing rates by hand:
 
 ```bash
-python ../../scripts/generate_pricing_map.py --region eastus2 --alias chat=gpt-4o --format hcl
+python ../../scripts/generate_pricing_map.py --region eastus2 --alias chat=gpt-4.1 --format hcl
 ```
 
 ## Inputs you must set
