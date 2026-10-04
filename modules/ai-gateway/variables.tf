@@ -469,6 +469,13 @@ variable "content_safety_endpoint" {
   description = "Azure AI Content Safety endpoint URL. Required when enable_content_safety is true."
   type        = string
   default     = null
+
+  validation {
+    # Prompts are sent to this endpoint in full, so a plaintext URL here would put the very content
+    # being screened on the wire. Mirrors the constraint foundry_backends places on inference_url.
+    condition     = var.content_safety_endpoint == null || can(regex("^https://", var.content_safety_endpoint))
+    error_message = "content_safety_endpoint must be an https URL."
+  }
 }
 
 variable "content_safety_shield_prompt" {

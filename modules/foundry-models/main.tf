@@ -35,6 +35,14 @@ locals {
 resource "azurerm_cognitive_account" "this" {
   for_each = var.accounts
 
+  # checkov:skip=CKV_AZURE_134:Public network access is a per-account input, not a hardcoded value. The
+  # quickstart example leaves it enabled so the example is reachable without a jump host; the production
+  # example disables it and fronts the account with a private endpoint. Enforced by the caller, not here.
+  # checkov:skip=CKV2_AZURE_22:Encryption at rest with a customer-managed key is supported via the
+  # customer_managed_key block but not imposed. CMK requires a Key Vault with purge protection and an
+  # access policy for this account's identity; making that mandatory would force every adopter to stand
+  # up key infrastructure for a quickstart. Platform-managed keys remain encrypted at rest.
+
   name                = "${var.name_prefix}-aif-${each.key}"
   location            = each.value.location
   resource_group_name = var.resource_group_name

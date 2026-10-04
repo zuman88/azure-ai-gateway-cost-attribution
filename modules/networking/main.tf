@@ -185,6 +185,70 @@ resource "azurerm_subnet_network_security_group_association" "apim" {
 }
 
 # ---------------------------------------------------------------------------------------------------
+# Private endpoint subnet security
+#
+# A subnet with no NSG inherits only the platform defaults, which permit any VNet-sourced traffic to
+# reach it. That is a wide blast radius for the one subnet holding private links to Foundry, Key Vault
+# and storage: anything that gains a foothold anywhere in the VNet, or in a peered VNet, can reach
+# every private endpoint in it.
+#
+# Note that NSG rules only take effect on private endpoints because private_endpoint_network_policies
+# is "Enabled" on the subnet above. With it disabled - which was the default for years - these rules
+# would be accepted by Terraform and silently never evaluated.
+# ---------------------------------------------------------------------------------------------------
+resource "azurerm_network_security_group" "private_endpoints" {
+  count = local.create_vnet ? 1 : 0
+
+  name                = "${var.name_prefix}-pe-nsg"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = local.tags
+}
+
+resource "azurerm_network_security_rule" "pe_allow_vnet_https" {
+  count = local.create_vnet ? 1 : 0
+
+  name                        = "AllowVnetHttpsInbound"
+  description                 = "Private endpoints are reached over 443 from inside the virtual network."
+  resource_group_name         = var.resource_group_name
+  network_security_group_name = azurerm_network_security_group.private_endpoints[0].name
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "443"
+  source_address_prefix       = "VirtualNetwork"
+  destination_address_prefix  = "VirtualNetwork"
+}
+
+# The platform's own DenyAllInBound sits at priority 65500, *below* AllowVnetInBound at 65000. Without
+# an explicit rule here, that default allow wins and the 443-only rule above constrains nothing.
+resource "azurerm_network_security_rule" "pe_deny_inbound" {
+  count = local.create_vnet ? 1 : 0
+
+  name                        = "DenyAllInbound"
+  description                 = "Everything other than the HTTPS rule above is denied."
+  resource_group_name         = var.resource_group_name
+  network_security_group_name = azurerm_network_security_group.private_endpoints[0].name
+  priority                    = 4096
+  direction                   = "Inbound"
+  access                      = "Deny"
+  protocol                    = "*"
+  source_port_range           = "*"
+  destination_port_range      = "*"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+}
+
+resource "azurerm_subnet_network_security_group_association" "private_endpoints" {
+  count = local.create_vnet ? 1 : 0
+
+  subnet_id                 = azurerm_subnet.private_endpoints[0].id
+  network_security_group_id = azurerm_network_security_group.private_endpoints[0].id
+}
+
+# ---------------------------------------------------------------------------------------------------
 # Private DNS
 #
 # All three zones, every time. Which one answers depends on the hostname the caller used, and Foundry

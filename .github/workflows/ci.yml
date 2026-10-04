@@ -120,8 +120,8 @@ jobs:
           framework: terraform
           quiet: true
           soft_fail: false
-          # Several checks assume a standalone deployment and misfire on a
-          # reusable module. Each skip is justified in SECURITY.md or an ADR
-          # rather than being waved through.
-          skip_check: >-
-            CKV_AZURE_109,CKV_TF_1
+          # No global skip list. Suppressions live next to the resource they
+          # apply to, as `checkov:skip=<id>:<reason>` comments, so that the
+          # justification is visible to anyone reading that resource and is
+          # reviewed when the resource changes. A skip list here would hide
+          # the same findings with no local trace.

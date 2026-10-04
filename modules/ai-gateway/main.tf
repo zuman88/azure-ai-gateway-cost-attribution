@@ -247,6 +247,11 @@ resource "terraform_data" "guards" {
 resource "azurerm_api_management" "this" {
   count = local.create_apim ? 1 : 0
 
+  # checkov:skip=CKV_AZURE_174:Driven by the public_network_access_enabled input rather than fixed here.
+  # A gateway whose whole purpose is to be the organisation's entry point is frequently and legitimately
+  # internet-facing, protected by Entra ID, WAF and rate limiting rather than by network reachability.
+  # The production example disables it; the quickstart does not, so the example can actually be called.
+
   name                = "${var.name_prefix}-apim"
   location            = var.location
   resource_group_name = var.resource_group_name
@@ -344,6 +349,11 @@ resource "azurerm_api_management_named_value" "environment" {
 resource "azurerm_api_management_backend" "foundry" {
   for_each = var.foundry_backends
 
+  # checkov:skip=CKV_AZURE_215:This "protocol" field selects the backend *type* - APIM accepts only
+  # "http" or "soap" here - and says nothing about TLS. Transport security is determined by the URL
+  # scheme, and foundry_backends validates that every inference_url matches ^https://. Setting this to
+  # "https" would simply be rejected by the provider.
+
   name                = "foundry-${each.key}"
   resource_group_name = local.apim_rg
   api_management_name = local.apim_name
@@ -411,6 +421,9 @@ resource "azapi_resource" "model_pool" {
 # ---------------------------------------------------------------------------------------------------
 resource "azurerm_api_management_backend" "content_safety" {
   count = var.enable_content_safety ? 1 : 0
+
+  # checkov:skip=CKV_AZURE_215:As above, "protocol" selects http vs soap and is unrelated to TLS.
+  # content_safety_endpoint is validated to be https.
 
   name                = "content-safety"
   resource_group_name = local.apim_rg
