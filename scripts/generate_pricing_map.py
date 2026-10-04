@@ -300,6 +300,14 @@ def build_entry(
         "region": region,
         "version": version,
         "deployment": deployment_type,
+        # The retail meter behind each rate. Cost Management reports spend by meter name, so this is
+        # the column a reconciliation joins on when the question stops being "what did the gateway
+        # estimate" and becomes "which invoice line is this". It is also the fastest way to check that
+        # a surprising rate came from the meter you expected rather than a mis-parsed one.
+        #
+        # The ai-gateway module strips "source" before writing the named value, so this costs nothing
+        # at the gateway - it is provenance for the generated file and for whoever reviews it.
+        "meters": {bucket: rate.meter_name for bucket, rate in sorted(best.items())},
     }
     return entry, lines, None
 

@@ -82,8 +82,19 @@ ordinary ingestion-latency skew does not page anyone.
 
 ### Event Hub as an explicit opt-in
 
-`enable_eventhub_audit` provisions a namespace, a hub and an APIM logger for adopters who need
-unsampled, audit-grade records that outlive Application Insights retention. The namespace is created
+`enable_eventhub_audit` provisions a namespace, a hub and an APIM logger, and adds a `log-to-eventhub`
+element that writes the same ledger record as the `trace` above — unsampled, one JSON object per
+request — for adopters who need audit-grade records that outlive Application Insights retention. It
+duplicates the trace rather than replacing it, so that the dashboards and the audit stream cannot
+disagree about what happened.
+
+The flag lives on the **ai-gateway** module rather than cost-attribution, even though the requirement
+is a cost-attribution one. A policy cannot reference a logger that does not exist yet, so the logger
+must be created in the same dependency graph as the policy that names it — and cost-attribution
+already depends on ai-gateway for the gateway's name and identity, which makes the reverse ordering
+impossible to express.
+
+The namespace is created
 with `local_authentication_enabled = false` and the gateway's managed identity is granted **Azure
 Event Hubs Data Sender**, so there is no connection string to rotate or leak. It is off by default
 because it is a standing cost for a requirement most adopters do not have.

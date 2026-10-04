@@ -160,7 +160,7 @@ Reads the request body once (preserving it for the backend) and extracts the
 `400 missing_model` here rather than being forwarded and failing confusingly at
 the backend.
 
-### §3 (continued) — Alias resolution
+### §3b — Alias resolution
 
 Resolves `requestedModel` against the route table named value into
 `targetPool` and `targetDeployment`. An unrecognised alias is rejected with
@@ -254,9 +254,23 @@ cost. Three details are worth knowing:
   metadata fields are the schema every alert and the workbook derive from, and
   a response header `x-ai-estimated-cost-usd` formatted `F8`.
 
-If you change what the trace emits, you must change `local.ledger_query` in
-`modules/cost-attribution/main.tf` to match, or the alerts will quietly query
-columns that no longer exist.
+When `enable_eventhub_audit` is set, the section closes by writing the **same
+record a second time** through `<log-to-eventhub>`, as one compact JSON object
+per request. The duplication is deliberate. The trace is sampled and bounded by
+the workspace's retention, which is right for operating a gateway and
+disqualifying for a number somebody will dispute; the Event Hub copy has
+neither constraint. Emitting one from the other, rather than two independently
+assembled records, is what stops the dashboards and the audit stream from
+disagreeing about what happened.
+
+Remember that Event Hub is a buffer and not an archive — `eventhub_retention_days`
+defaults to 7. Land it somewhere durable or the audit trail is theatre.
+
+If you change what the trace emits, you must change **three** things together:
+the `<trace>` metadata, the `<log-to-eventhub>` body beside it, and
+`local.ledger_query` in `modules/cost-attribution/main.tf`. Miss the third and
+the alerts quietly query columns that no longer exist; miss the second and the
+audit stream silently drifts from the record everyone else is reading.
 
 ### §12 — Governance headers and scrubbing
 

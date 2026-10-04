@@ -69,6 +69,8 @@ $llmApiBaseline = [ordered]@{
     entra_claim_order                    = '["appid","azp","oid","sub"]'
     entra_consumer_names                 = '{}'
     entra_gateway_token_limit            = 'null'
+    enable_eventhub_audit                = 'true'
+    audit_logger_name                    = '"audit-logger"'
 }
 
 function New-LlmApiExpr {
@@ -105,6 +107,16 @@ $cases = @(
             content_safety_shield_prompt         = 'false'
             enable_semantic_cache                = 'false'
             semantic_cache_embeddings_backend_id = '""'
+            enable_eventhub_audit                = 'false'
+        }
+    },
+    @{
+        # Cost attribution on, audit stream off. The log-to-eventhub element is nested inside the
+        # cost-attribution block, so this is the permutation that catches an unbalanced directive
+        # between the two.
+        Name = 'llm-api-cost-no-audit'
+        Expr = New-LlmApiExpr @{
+            enable_eventhub_audit = 'false'
         }
     },
     @{

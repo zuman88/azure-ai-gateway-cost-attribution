@@ -229,6 +229,11 @@ Cache hits are marked explicitly in telemetry (`cacheHit=true`, `estimatedCostUS
 |---|---|---|
 | `enable_cost_attribution` | `bool` | `false` |
 | `pricing_map` | `any` | `{}` |
+| `pricing_effective_date` | `string` | `null` |
+| `enable_eventhub_audit` | `bool` | `false` |
+| `eventhub_sku` | `string` | `"Standard"` |
+| `eventhub_partition_count` | `number` | `4` |
+| `eventhub_retention_days` | `number` | `7` |
 
 ```hcl
 pricing_map = {
@@ -249,6 +254,12 @@ python scripts/generate_pricing_map.py --region eastus2 --alias chat=gpt-4o --fo
 ```
 
 An unknown model prices at `-1` ("unpriced"), never `0` — a zero would be indistinguishable from a free request and would quietly understate the bill. See [ADR-0008](../../docs/decisions/0008-context-length-pricing-tiers.md) for context-length tiers.
+
+`pricing_effective_date` is the date stamped on every priced request, so a chargeback number can be traced back to the rates that produced it. Left `null` it is the newest `effectiveDate` among the `pricing_map` entries, which is what the generator writes. It must not be derived from the clock: a value that changes on every plan forces a choice between permanent plan noise and ignoring changes to the named value, and ignoring them means a regenerated rate table produces no diff and never reaches the gateway.
+
+The module strips each entry's `source` block before writing the named value. A named value caps at **4096 characters**, and provenance is roughly a third of each entry — so it stays in your tfvars where a reviewer can read it, and off the gateway where the policy never looks at it. The limit is checked at plan time rather than left to fail mid-apply with an error that names neither the cap nor the resource.
+
+`enable_eventhub_audit` adds a `log-to-eventhub` element that writes the same ledger record, unsampled, as one JSON object per request, alongside a namespace, hub, logger and the Data Sender role assignment. It requires `enable_cost_attribution`, since the ledger is what it carries. It lives on this module rather than cost-attribution because a policy cannot name a logger that does not exist yet, so the two must be created in the same dependency graph. Event Hub is a buffer rather than an archive — land the stream somewhere durable inside `eventhub_retention_days`.
 
 ---
 

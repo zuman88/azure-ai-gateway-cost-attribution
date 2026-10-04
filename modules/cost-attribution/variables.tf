@@ -44,26 +44,8 @@ variable "application_insights_id" {
 }
 
 variable "api_management_id" {
-  description = "API Management resource ID. Used to scope metric alerts and to attach the Event Hub logger when the audit path is enabled."
+  description = "API Management resource ID, used to scope the gateway metric alerts."
   type        = string
-}
-
-variable "api_management_name" {
-  description = "API Management instance name. Required only when enable_eventhub_audit is true."
-  type        = string
-  default     = null
-}
-
-variable "api_management_resource_group_name" {
-  description = "Resource group of the API Management instance. Required only when enable_eventhub_audit is true."
-  type        = string
-  default     = null
-}
-
-variable "api_management_principal_id" {
-  description = "Object ID of the gateway's managed identity. Granted Event Hubs Data Sender when the audit path is enabled, so that the stream needs no connection string."
-  type        = string
-  default     = null
 }
 
 variable "metric_namespace" {
@@ -80,9 +62,27 @@ variable "consumers" {
   description = <<-EOT
     The chargeback register: who consumes the gateway and who pays for them.
 
-    The key must match the API Management subscription display name that the ai-gateway module creates,
-    because that name is what the gateway stamps onto every ledger record. Everything else here is
-    finance metadata that Azure has no way of knowing.
+    The key must equal the consumer identity the gateway stamps onto each ledger record, because that
+    is the column the workbook joins on. Which value that is depends on how callers authenticate:
+
+      * caller_authentication = "subscription_key"
+          The key from the ai-gateway module's `subscriptions` map. That map key becomes the API
+          Management subscription id verbatim, and the policy records it as the consumer.
+
+      * caller_authentication = "entra_id"
+          The Entra claim value the policy resolved - in practice the calling application's client id.
+          These are the same keys you use in the ai-gateway module's `entra_consumer_names`, which
+          supplies the friendly label the reports display beside the id.
+
+      * caller_authentication = "both"
+          Token-authenticated callers are recorded by claim, key-only callers by subscription id, so
+          register whichever identities are actually in use. The ledger's consumerType column records
+          which of the two priced each request.
+
+    A consumer that appears in the ledger but not here is not dropped: it is reported with a cost
+    centre of "unassigned", which is the signal that the register has drifted from reality.
+
+    Everything else here is finance metadata that Azure has no way of knowing.
 
     * cost_centre     - The account that gets charged.
     * owner           - Who to contact when the spend looks wrong.
@@ -269,45 +269,6 @@ variable "workbook_display_name" {
   description = "Display name of the chargeback workbook."
   type        = string
   default     = null
-}
-
-# ---------------------------------------------------------------------------------------------------
-# Audit-grade export
-# ---------------------------------------------------------------------------------------------------
-
-variable "enable_eventhub_audit" {
-  description = <<-EOT
-    Stream every gateway request to Event Hub in addition to Application Insights.
-
-    Application Insights is a sampled, retention-limited telemetry store. That is the right trade-off
-    for operating a gateway and the wrong one for producing an invoice somebody will dispute. Turn this
-    on when chargeback numbers need to survive an audit, and land the stream in your own warehouse.
-  EOT
-  type        = bool
-  default     = false
-}
-
-variable "eventhub_partition_count" {
-  description = "Partitions on the audit event hub."
-  type        = number
-  default     = 4
-}
-
-variable "eventhub_retention_days" {
-  description = "Message retention on the audit event hub, in days. This is a buffer, not an archive: land the stream somewhere durable."
-  type        = number
-  default     = 7
-}
-
-variable "eventhub_sku" {
-  description = "Event Hubs namespace SKU."
-  type        = string
-  default     = "Standard"
-
-  validation {
-    condition     = contains(["Basic", "Standard", "Premium"], var.eventhub_sku)
-    error_message = "eventhub_sku must be Basic, Standard or Premium."
-  }
 }
 
 variable "long_context_review_threshold" {

@@ -200,7 +200,7 @@
     </choose>
 
     <!-- ============================================================================================
-         3. Resolve the client-facing alias to a backend pool and a physical deployment
+         3b. Resolve the client-facing alias to a backend pool and a physical deployment
          The route table lives in an APIM named value so that adding a model is a named-value update
          rather than a policy deployment.
          ============================================================================================ -->
@@ -660,6 +660,50 @@
     <set-header name="x-ai-estimated-cost-usd" exists-action="override">
       <value>@(((double)context.Variables["estimatedCostUSD"]).ToString("F8", System.Globalization.CultureInfo.InvariantCulture))</value>
     </set-header>
+
+%{ if enable_eventhub_audit ~}
+    <!-- The same ledger again, unsampled, as one JSON object per request.
+         The trace above is subject to Application Insights sampling and to that workspace's retention;
+         both are correct for operating a gateway and disqualifying for a number that has to survive a
+         dispute. This path has neither. It is deliberately a duplicate rather than a replacement, so
+         that the operational dashboards and the audit stream cannot drift apart.
+
+         Event Hub is a buffer, not an archive - message retention is days. Land this somewhere durable
+         before the retention window closes or the audit trail is theatre. -->
+    <log-to-eventhub logger-id="${audit_logger_name}">@{
+        var ledger = new JObject();
+        ledger["schemaVersion"] = 1;
+        ledger["timestamp"] = DateTime.UtcNow.ToString("o");
+        ledger["correlationId"] = (string)context.Variables["correlationId"];
+        ledger["environment"] = "{{${environment_named_value}}}";
+        ledger["product"] = (string)context.Variables["consumerProduct"];
+        ledger["subscriptionId"] = (string)context.Variables["consumerSubscription"];
+        ledger["consumerId"] = (string)context.Variables["consumerId"];
+        ledger["consumerName"] = (string)context.Variables["consumerName"];
+        ledger["consumerType"] = (string)context.Variables["consumerType"];
+        ledger["apiId"] = context.Api.Id;
+        ledger["operationId"] = context.Operation.Id;
+        ledger["modelAlias"] = (string)context.Variables["requestedModel"];
+        ledger["deployment"] = (string)context.Variables["targetDeployment"];
+        ledger["backendModel"] = (string)context.Variables["backendModel"];
+        ledger["pool"] = (string)context.Variables["targetPool"];
+        ledger["statusCode"] = context.Response.StatusCode;
+        ledger["streaming"] = (bool)context.Variables["isStreaming"];
+        ledger["usageMeasured"] = (bool)context.Variables["usageMeasured"];
+        ledger["promptTokens"] = (int)context.Variables["promptTokens"];
+        ledger["billablePromptTokens"] = (int)context.Variables["billablePromptTokens"];
+        ledger["cachedTokens"] = (int)context.Variables["cachedTokens"];
+        ledger["cacheWriteTokens"] = (int)context.Variables["cacheWriteTokens"];
+        ledger["completionTokens"] = (int)context.Variables["completionTokens"];
+        ledger["reasoningTokens"] = (int)context.Variables["reasoningTokens"];
+        ledger["totalTokens"] = (int)context.Variables["totalTokens"];
+        ledger["estimatedCostUSD"] = (double)context.Variables["estimatedCostUSD"];
+        ledger["pricingEffectiveDate"] = (string)context.Variables["pricingEffectiveDate"];
+        ledger["contextTier"] = (string)context.Variables["contextTier"];
+        ledger["latencyMs"] = (DateTime.UtcNow - (DateTime)context.Variables["requestStart"]).TotalMilliseconds;
+        return ledger.ToString(Newtonsoft.Json.Formatting.None);
+    }</log-to-eventhub>
+%{ endif ~}
 %{ endif ~}
 
 %{ if enable_semantic_cache ~}

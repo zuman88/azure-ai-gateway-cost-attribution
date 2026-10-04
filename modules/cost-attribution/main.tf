@@ -75,7 +75,16 @@ locals {
         streaming      = tostring(customDimensions["streaming"]) =~ "True",
         usageMeasured  = tostring(customDimensions["usageMeasured"]) =~ "True",
         promptTokens   = toint(customDimensions["promptTokens"]),
+        // Prompt tokens charged at the full input rate, i.e. promptTokens minus the cached ones. The
+        // policy prices on this, so a report that recomputes spend from promptTokens alone will not
+        // reconcile against the ledger's own estimatedCostUSD.
+        billablePromptTokens = toint(customDimensions["billablePromptTokens"]),
         cachedTokens   = toint(customDimensions["cachedTokens"]),
+        // Writing to the prompt cache is billed separately from reading it, and reasoning tokens are
+        // billed as output the caller never sees. Both are emitted per request and both are a common
+        // source of "the invoice is higher than the ledger" when they are left out of a breakdown.
+        cacheWriteTokens = toint(customDimensions["cacheWriteTokens"]),
+        reasoningTokens  = toint(customDimensions["reasoningTokens"]),
         completionTokens = toint(customDimensions["completionTokens"]),
         totalTokens    = toint(customDimensions["totalTokens"]),
         estimatedCostUSD = todouble(customDimensions["estimatedCostUSD"]),
@@ -509,67 +518,4 @@ resource "azurerm_application_insights_workbook" "chargeback" {
     # the KQL literal is single-quoted in the template.
     consumer_registry = replace(jsonencode(local.consumer_registry), "\"", "\\\"")
   })
-}
-
-# ---------------------------------------------------------------------------------------------------
-# Audit-grade export (optional)
-#
-# Application Insights is sampled and retention-limited by design. That is correct for operating a
-# gateway and wrong for producing a number somebody will dispute. When chargeback has to be defensible,
-# this streams every request out unsampled.
-# ---------------------------------------------------------------------------------------------------
-resource "azurerm_eventhub_namespace" "audit" {
-  count = var.enable_eventhub_audit ? 1 : 0
-
-  name                = "${var.name_prefix}-ai-audit-ehns"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  sku                 = var.eventhub_sku
-  capacity            = 1
-  tags                = local.tags
-
-  local_authentication_enabled  = false
-  public_network_access_enabled = true
-  minimum_tls_version           = "1.2"
-}
-
-resource "azurerm_eventhub" "audit" {
-  count = var.enable_eventhub_audit ? 1 : 0
-
-  name              = "ai-gateway-ledger"
-  namespace_id      = azurerm_eventhub_namespace.audit[0].id
-  partition_count   = var.eventhub_partition_count
-  message_retention = var.eventhub_retention_days
-}
-
-resource "azurerm_api_management_logger" "eventhub" {
-  count = var.enable_eventhub_audit ? 1 : 0
-
-  name                = "${var.name_prefix}-ai-audit-logger"
-  api_management_name = var.api_management_name
-  resource_group_name = var.api_management_resource_group_name
-  description         = "Unsampled chargeback ledger stream for audit-grade cost attribution."
-
-  eventhub {
-    name         = azurerm_eventhub.audit[0].name
-    endpoint_uri = "sb://${azurerm_eventhub_namespace.audit[0].name}.servicebus.windows.net"
-  }
-
-  lifecycle {
-    precondition {
-      condition     = var.api_management_name != null && var.api_management_resource_group_name != null
-      error_message = "api_management_name and api_management_resource_group_name are required when enable_eventhub_audit is true."
-    }
-  }
-}
-
-# The gateway's managed identity writes to the hub. Local authentication is disabled on the namespace,
-# so there is no connection string to rotate, leak or check into a repository.
-resource "azurerm_role_assignment" "gateway_to_eventhub" {
-  count = var.enable_eventhub_audit && var.api_management_principal_id != null ? 1 : 0
-
-  scope                            = azurerm_eventhub_namespace.audit[0].id
-  role_definition_name             = "Azure Event Hubs Data Sender"
-  principal_id                     = var.api_management_principal_id
-  skip_service_principal_aad_check = true
 }

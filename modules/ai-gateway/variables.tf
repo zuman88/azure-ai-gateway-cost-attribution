@@ -344,8 +344,17 @@ variable "products" {
 
 variable "subscriptions" {
   description = <<-EOT
-    Consuming applications. Each becomes an API Management subscription whose key is the chargeback
-    identity, so name these after real applications rather than after people.
+    Consuming applications. Each becomes an API Management subscription, and the map key becomes the
+    subscription's id verbatim - which is what the gateway stamps onto every ledger record as the
+    chargeback identity. Name these after real applications rather than after people.
+
+    The key is therefore a published identifier, not an internal label. It must be a valid API
+    Management subscription id (letters, digits and hyphens, starting with a letter or digit), and
+    renaming one re-keys that consumer's history: reports split at the rename rather than following it.
+
+    In subscription_key mode this key is what you use in the cost-attribution module's `consumers`
+    register. In entra_id mode the ledger records the Entra claim instead, so the register is keyed by
+    the application id there - see that module's documentation.
   EOT
 
   type = map(object({
@@ -363,6 +372,13 @@ variable "subscriptions" {
       for k, v in var.subscriptions : contains(["active", "suspended", "submitted", "rejected", "cancelled", "expired"], v.state)
     ])
     error_message = "Subscription state must be one of active, suspended, submitted, rejected, cancelled, expired."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.subscriptions : can(regex("^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$", k))
+    ])
+    error_message = "Subscription keys become API Management subscription ids verbatim, so each must be 1-80 characters of letters, digits or hyphens and must start with a letter or digit."
   }
 }
 
@@ -568,6 +584,17 @@ variable "enable_cost_attribution" {
   default     = false
 }
 
+variable "pricing_effective_date" {
+  description = "Date the rate table became current, as YYYY-MM-DD, recorded in the ledger alongside every priced request so a chargeback number can be traced back to the rates that produced it. Leave null to use the newest effectiveDate carried by the pricing_map entries, which is what scripts/generate_pricing_map.py writes. Set it explicitly only when you maintain rates by hand."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.pricing_effective_date == null || can(formatdate("YYYY-MM-DD", "${var.pricing_effective_date}T00:00:00Z"))
+    error_message = "pricing_effective_date must be a YYYY-MM-DD date."
+  }
+}
+
 variable "pricing_map" {
   description = <<-EOT
     Rates keyed by model alias, per `unit` tokens. Generate it with scripts/generate_pricing_map.py
@@ -749,5 +776,47 @@ variable "caller_authentication" {
       contains(["all", "any"], claim.match) && length(claim.values) > 0
     ])
     error_message = "Each caller_authentication.required_claims entry needs match of all or any, and at least one value."
+  }
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Audit-grade export
+# ---------------------------------------------------------------------------------------------------
+
+variable "enable_eventhub_audit" {
+  description = <<-EOT
+    Stream every gateway request to Event Hub in addition to Application Insights.
+
+    Application Insights is a sampled, retention-limited telemetry store. That is the right trade-off
+    for operating a gateway and the wrong one for producing an invoice somebody will dispute. Turn this
+    on when chargeback numbers need to survive an audit, and land the stream in your own warehouse.
+
+    The stream carries the same chargeback ledger the policy writes to Application Insights, one JSON
+    object per request, unsampled. Requires enable_cost_attribution, since the ledger is what is sent.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "eventhub_partition_count" {
+  description = "Partitions on the audit event hub."
+  type        = number
+  default     = 4
+}
+
+variable "eventhub_retention_days" {
+  description = "Message retention on the audit event hub, in days. This is a buffer, not an archive: land the stream somewhere durable."
+  type        = number
+  default     = 7
+}
+
+variable "eventhub_sku" {
+  description = "Event Hubs namespace SKU."
+  type        = string
+  default     = "Standard"
+
+  validation {
+    condition     = contains(["Basic", "Standard", "Premium"], var.eventhub_sku)
+    error_message = "eventhub_sku must be Basic, Standard or Premium."
   }
 }

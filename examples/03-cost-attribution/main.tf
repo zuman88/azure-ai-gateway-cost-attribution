@@ -46,10 +46,6 @@ locals {
     managed_by  = "terraform"
     example     = "03-cost-attribution"
   })
-
-  apim_parts = split("/", var.existing_api_management_id)
-  apim_name  = element(local.apim_parts, 8)
-  apim_rg    = element(local.apim_parts, 4)
 }
 
 data "azurerm_resource_group" "target" {
@@ -91,6 +87,11 @@ module "ai_gateway" {
 
   enable_cost_attribution = true
   pricing_map             = var.pricing_map
+
+  # The unsampled copy of the ledger. This lives on the gateway module rather than the reporting module
+  # because the API policy is what writes to the hub, and a policy cannot name a logger that does not
+  # exist yet - so both have to be created in the same dependency graph.
+  enable_eventhub_audit = var.enable_eventhub_audit
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -105,12 +106,9 @@ module "cost_attribution" {
   environment_name    = var.environment_name
   tags                = local.tags
 
-  application_insights_id            = var.application_insights_id
-  api_management_id                  = var.existing_api_management_id
-  api_management_name                = local.apim_name
-  api_management_resource_group_name = local.apim_rg
-  api_management_principal_id        = module.ai_gateway.principal_id
-  metric_namespace                   = module.ai_gateway.metric_namespace
+  application_insights_id = var.application_insights_id
+  api_management_id       = var.existing_api_management_id
+  metric_namespace        = module.ai_gateway.metric_namespace
 
   consumers    = var.consumers
   alert_emails = var.alert_emails
@@ -123,6 +121,4 @@ module "cost_attribution" {
   daily_spend_threshold_usd          = var.daily_spend_threshold_usd
   token_rate_alert_threshold         = var.token_rate_alert_threshold
   unmeasured_usage_threshold_percent = var.unmeasured_usage_threshold_percent
-
-  enable_eventhub_audit = var.enable_eventhub_audit
 }

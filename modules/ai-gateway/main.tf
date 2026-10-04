@@ -76,11 +76,38 @@ locals {
   routes_named_value_name  = "${var.name_prefix}-model-routes"
   pricing_named_value_name = "${var.name_prefix}-model-pricing"
   environment_named_value  = "${var.name_prefix}-environment"
+  audit_logger_name        = "${var.name_prefix}-ai-audit-logger"
+
+  # The map's effective date has to be derived from the rates themselves, never from the clock. Stamping
+  # it with timestamp() makes the named value differ on every single plan, which forces the choice
+  # between permanent plan noise and ignoring changes to the value altogether - and ignoring them means
+  # a freshly regenerated rate table produces no diff and silently never reaches the gateway.
+  pricing_entry_dates = compact([
+    for alias, rates in var.pricing_map : try(tostring(rates.effectiveDate), "")
+  ])
+
+  pricing_effective_date = coalesce(
+    var.pricing_effective_date,
+    length(local.pricing_entry_dates) > 0 ? reverse(sort(local.pricing_entry_dates))[0] : null,
+    "unknown"
+  )
+
+  # The gateway prices requests; it does not audit where a rate came from. "source" exists so that a
+  # human reading the generated tfvars can see which retail meter produced each number, and it is a
+  # third of each entry. An API Management named value caps at 4096 characters, so shipping provenance
+  # spends a genuinely scarce resource on data the policy never reads.
+  pricing_rates = {
+    for alias, rates in var.pricing_map : alias => {
+      for key, value in rates : key => value if key != "source"
+    }
+  }
 
   pricing_payload = merge(
-    { "_meta" = { effectiveDate = formatdate("YYYY-MM-DD", timestamp()) } },
-    var.pricing_map
+    { "_meta" = { effectiveDate = local.pricing_effective_date } },
+    local.pricing_rates
   )
+
+  pricing_named_value_length = length(base64encode(jsonencode(local.pricing_payload)))
 
   # -------------------------------------------------------------------------------------------------
   # Operations. Chat completions and embeddings are always published; the Responses API is opt-in
@@ -200,6 +227,16 @@ resource "terraform_data" "guards" {
     precondition {
       condition     = !var.enable_semantic_cache || var.semantic_cache_redis_connection_string != null
       error_message = "semantic_cache_redis_connection_string is required when enable_semantic_cache is true."
+    }
+
+    precondition {
+      condition     = !var.enable_eventhub_audit || var.enable_cost_attribution
+      error_message = "enable_eventhub_audit requires enable_cost_attribution. The audit stream carries the chargeback ledger, and without cost attribution there is no ledger to carry."
+    }
+
+    precondition {
+      condition     = var.semantic_cache_embeddings_backend == null || contains(keys(var.foundry_backends), coalesce(var.semantic_cache_embeddings_backend, "__unset__"))
+      error_message = "semantic_cache_embeddings_backend must name a key from foundry_backends. Known keys: ${join(", ", sort(keys(var.foundry_backends)))}."
     }
 
     precondition {
@@ -324,9 +361,13 @@ resource "azurerm_api_management_named_value" "pricing" {
   tags                = ["ai-gateway", "cost"]
 
   lifecycle {
-    # The effective date is stamped at write time. Without this the map would be rewritten on every
-    # plan purely because timestamp() moved, producing noise in every pipeline run.
-    ignore_changes = [value]
+    precondition {
+      # Azure caps a named value at 4096 characters and rejects anything longer with an error that
+      # names neither the limit nor the resource. Catching it at plan time turns a confusing failure
+      # part-way through an apply into a sentence that says what to do about it.
+      condition     = local.pricing_named_value_length <= 4096
+      error_message = "The pricing map encodes to ${local.pricing_named_value_length} characters and API Management caps a named value at 4096. Price fewer aliases on this gateway, or drop the models nobody routes to - scripts/generate_pricing_map.py emits only the aliases you ask it for."
+    }
   }
 }
 
@@ -377,6 +418,29 @@ resource "azurerm_api_management_backend" "foundry" {
       }
     }
   }
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Embeddings backend for semantic cache lookups
+#
+# The semantic cache policy vectorises each prompt before it can compare it to anything, and it does
+# that by calling an embeddings deployment through a backend of its own. That backend cannot be one of
+# the pool members above: those are registered at the /openai/v1 inference root, whereas the cache
+# policy needs a URL that already resolves to a specific embedding deployment. Pointing the policy at a
+# pool member instead is the quiet failure mode here - every lookup errors and the cache simply never
+# returns a hit, which looks identical to a cache that is merely cold.
+# ---------------------------------------------------------------------------------------------------
+resource "azurerm_api_management_backend" "embeddings" {
+  count = var.enable_semantic_cache ? 1 : 0
+
+  # checkov:skip=CKV_AZURE_215:As above, "protocol" selects http vs soap and is unrelated to TLS.
+
+  name                = "foundry-embeddings"
+  resource_group_name = local.apim_rg
+  api_management_name = local.apim_name
+  protocol            = "http"
+  url                 = "${var.foundry_backends[local.semantic_cache_backend_key].inference_url}/openai/deployments/${var.semantic_cache_embeddings_deployment}/embeddings"
+  description         = "Embedding deployment ${var.semantic_cache_embeddings_deployment} on ${local.semantic_cache_backend_key}, used only for semantic cache vectorisation."
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -527,7 +591,9 @@ resource "azurerm_api_management_api_policy" "llm" {
     semantic_cache_score_threshold       = var.semantic_cache_settings.score_threshold
     semantic_cache_max_message_count     = var.semantic_cache_settings.max_message_count
     semantic_cache_duration_seconds      = var.semantic_cache_settings.duration_seconds
-    semantic_cache_embeddings_backend_id = var.enable_semantic_cache ? azurerm_api_management_backend.foundry[local.semantic_cache_backend_key].name : ""
+    semantic_cache_embeddings_backend_id = var.enable_semantic_cache ? azurerm_api_management_backend.embeddings[0].name : ""
+    enable_eventhub_audit                = var.enable_eventhub_audit
+    audit_logger_name                    = local.audit_logger_name
 
     entra_enabled                = local.entra_enabled
     entra_tenant_id              = coalesce(var.caller_authentication.tenant_id, "organizations")
@@ -606,9 +672,17 @@ resource "azurerm_api_management_subscription" "this" {
   api_management_name = local.apim_name
   resource_group_name = local.apim_rg
   product_id          = azurerm_api_management_product.this[each.value.product_key].id
-  display_name        = coalesce(each.value.display_name, each.key)
-  state               = each.value.state
-  allow_tracing       = false
+
+  # Pinning the subscription id to the map key is what makes chargeback joinable. The policy stamps
+  # context.Subscription.Id onto every ledger record, and left unset APIM generates a GUID - so the
+  # chargeback register would have to be keyed by an opaque identifier that only exists after an apply,
+  # and a human-readable register would silently join to nothing and report every consumer as
+  # "unassigned". With this set, the key you write in var.subscriptions is the key you charge.
+  subscription_id = each.key
+
+  display_name  = coalesce(each.value.display_name, each.key)
+  state         = each.value.state
+  allow_tracing = false
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -703,4 +777,67 @@ resource "azurerm_monitor_diagnostic_setting" "apim" {
   enabled_metric {
     category = "AllMetrics"
   }
+}
+# ---------------------------------------------------------------------------------------------------
+# Audit-grade export (optional)
+#
+# Application Insights is sampled and retention-limited by design. That is correct for operating a
+# gateway and wrong for producing a number somebody will dispute. When chargeback has to be defensible,
+# this streams every request out unsampled.
+#
+# These resources live here, beside the API policy, rather than with the rest of the cost-attribution
+# reporting. The policy is the only thing that writes to the hub, and a policy may not reference a
+# logger that does not yet exist - so the logger has to be created by the same module, in the same
+# dependency graph, as the policy that names it. The cost-attribution module already depends on this
+# one for the gateway's name and identity, which makes the reverse ordering impossible to express.
+# ---------------------------------------------------------------------------------------------------
+resource "azurerm_eventhub_namespace" "audit" {
+  count = var.enable_eventhub_audit ? 1 : 0
+
+  name                = "${var.name_prefix}-ai-audit-ehns"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  sku                 = var.eventhub_sku
+  capacity            = 1
+  tags                = var.tags
+
+  local_authentication_enabled  = false
+  public_network_access_enabled = true
+  minimum_tls_version           = "1.2"
+}
+
+resource "azurerm_eventhub" "audit" {
+  count = var.enable_eventhub_audit ? 1 : 0
+
+  name              = "ai-gateway-ledger"
+  namespace_id      = azurerm_eventhub_namespace.audit[0].id
+  partition_count   = var.eventhub_partition_count
+  message_retention = var.eventhub_retention_days
+}
+
+resource "azurerm_api_management_logger" "eventhub" {
+  count = var.enable_eventhub_audit ? 1 : 0
+
+  name                = local.audit_logger_name
+  api_management_name = local.apim_name
+  resource_group_name = local.apim_rg
+  description         = "Unsampled chargeback ledger stream for audit-grade cost attribution."
+
+  # endpoint_uri without a connection string selects identity-based auth against the namespace, which
+  # is the only option that works here: local_authentication_enabled is false on the namespace above.
+  eventhub {
+    name         = azurerm_eventhub.audit[0].name
+    endpoint_uri = "sb://${azurerm_eventhub_namespace.audit[0].name}.servicebus.windows.net"
+  }
+}
+
+# The gateway's managed identity writes to the hub. Local authentication is disabled on the namespace,
+# so there is no connection string to rotate, leak or check into a repository.
+resource "azurerm_role_assignment" "gateway_to_eventhub" {
+  count = var.enable_eventhub_audit ? 1 : 0
+
+  scope                            = azurerm_eventhub_namespace.audit[0].id
+  role_definition_name             = "Azure Event Hubs Data Sender"
+  principal_id                     = local.apim_principal_id
+  skip_service_principal_aad_check = true
 }

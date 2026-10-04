@@ -31,21 +31,6 @@ output "alert_rule_ids" {
   )
 }
 
-output "eventhub_namespace_id" {
-  description = "Event Hubs namespace carrying the unsampled audit stream, when enabled."
-  value       = var.enable_eventhub_audit ? azurerm_eventhub_namespace.audit[0].id : null
-}
-
-output "eventhub_name" {
-  description = "Event hub carrying the unsampled audit stream, when enabled."
-  value       = var.enable_eventhub_audit ? azurerm_eventhub.audit[0].name : null
-}
-
-output "eventhub_logger_name" {
-  description = "API Management logger to reference from an Event Hub trace policy when the audit path is enabled."
-  value       = var.enable_eventhub_audit ? azurerm_api_management_logger.eventhub[0].name : null
-}
-
 output "consumer_registry" {
   description = "The chargeback register as supplied, echoed for downstream reporting and for the ratio-allocation step in any external finance system."
   value = {
