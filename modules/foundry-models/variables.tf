@@ -127,9 +127,23 @@ variable "data_plane_role" {
 }
 
 variable "private_endpoint_subnet_id" {
-  description = "Subnet resource ID for Foundry private endpoints. When null, no private endpoints are created."
+  description = "Subnet resource ID for Foundry private endpoints. Required when enable_private_endpoints is true, and ignored otherwise."
   type        = string
   default     = null
+}
+
+variable "enable_private_endpoints" {
+  description = <<-EOT
+    Whether to place a private endpoint in front of each Foundry account, removing its public
+    endpoint from the data path.
+
+    This is a separate flag rather than being inferred from private_endpoint_subnet_id because the
+    subnet is normally created in the same apply as these accounts, which makes its id unknown at plan
+    time. Terraform cannot derive for_each keys from an unknown value and refuses to plan. A literal
+    bool is always known, so the configuration stays plannable in a single pass.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "private_dns_zone_ids" {
@@ -148,9 +162,23 @@ variable "private_dns_zone_ids" {
 }
 
 variable "diagnostics_workspace_id" {
-  description = "Log Analytics workspace resource ID for Foundry diagnostic settings. When null, no diagnostic settings are created."
+  description = "Log Analytics workspace resource ID for Foundry diagnostic settings. Required when enable_diagnostics is true, and ignored otherwise."
   type        = string
   default     = null
+}
+
+variable "enable_diagnostics" {
+  description = <<-EOT
+    Whether to create diagnostic settings on the Foundry accounts, sending Audit, RequestResponse and
+    all metrics to diagnostics_workspace_id.
+
+    This is a separate flag rather than being inferred from diagnostics_workspace_id because the
+    workspace is normally created in the same apply as these accounts, which makes its id unknown at
+    plan time. Terraform cannot build for_each keys from an unknown value and refuses to plan. A
+    literal bool is always known, so the configuration stays plannable in a single pass.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "tags" {

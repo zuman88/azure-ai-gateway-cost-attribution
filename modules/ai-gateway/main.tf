@@ -763,8 +763,14 @@ resource "azurerm_role_assignment" "gateway_to_foundry" {
 # "what happened to that one request at 14:07" - this can, and it is the log the cost-attribution
 # telemetry_gap alert is implicitly reasoning about.
 # ---------------------------------------------------------------------------------------------------
+#
+# The count keys off a dedicated flag rather than `log_analytics_workspace_id != null`, because the
+# workspace is usually created by the same root module that calls this one. Its id is then unknown at
+# plan time, and Terraform cannot decide how many instances a count produces from an unknown value -
+# it refuses to plan at all. A bool the caller sets literally is always known, so the graph stays
+# plannable in one pass no matter where the workspace comes from.
 resource "azurerm_monitor_diagnostic_setting" "apim" {
-  count = var.log_analytics_workspace_id != null ? 1 : 0
+  count = var.enable_diagnostics ? 1 : 0
 
   name                       = "diag-to-law"
   target_resource_id         = local.apim_id
@@ -776,6 +782,13 @@ resource "azurerm_monitor_diagnostic_setting" "apim" {
 
   enabled_metric {
     category = "AllMetrics"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.log_analytics_workspace_id != null
+      error_message = "enable_diagnostics is true but log_analytics_workspace_id is null. Set the workspace id, or set enable_diagnostics = false."
+    }
   }
 }
 # ---------------------------------------------------------------------------------------------------

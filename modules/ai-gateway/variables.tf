@@ -431,9 +431,27 @@ variable "application_insights_instrumentation_key" {
 }
 
 variable "log_analytics_workspace_id" {
-  description = "Log Analytics workspace resource ID for API Management diagnostic settings. When null, no diagnostic setting is created."
+  description = "Log Analytics workspace resource ID for API Management diagnostic settings. Required when enable_diagnostics is true, and ignored otherwise."
   type        = string
   default     = null
+}
+
+variable "enable_diagnostics" {
+  description = <<-EOT
+    Whether to create the API Management diagnostic setting that sends GatewayLogs and all metrics to
+    log_analytics_workspace_id.
+
+    GatewayLogs is the per-request record - which operation, which backend, which subscription, the
+    response code and the latency. The token metrics the policy emits are aggregates and cannot answer
+    "what happened to that one request at 14:07"; this log can.
+
+    This is a separate flag rather than being inferred from log_analytics_workspace_id because the
+    workspace is normally created in the same apply as the gateway, which makes its id unknown at plan
+    time. Terraform cannot resolve a count from an unknown value and refuses to plan. A literal bool is
+    always known, so the configuration stays plannable in a single pass.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "diagnostic_sampling_percentage" {

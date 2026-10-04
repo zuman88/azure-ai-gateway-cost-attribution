@@ -197,7 +197,8 @@ Both are inert in `entra_id` mode, by the mechanism described above.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `log_analytics_workspace_id` | `string` | `null` | Enables resource diagnostic settings. |
+| `log_analytics_workspace_id` | `string` | `null` | Workspace that receives GatewayLogs and metrics. Required when `enable_diagnostics` is true. |
+| `enable_diagnostics` | `bool` | `false` | Creates the API Management diagnostic setting. Separate from the workspace id on purpose — see below. |
 | `diagnostic_sampling_percentage` | `number` | `100` | **Leave at 100 if you use the chargeback ledger.** Sampling discards requests, and a sampled ledger under-reports silently. |
 | `metric_namespace` | `string` | `"aigateway"` | Namespace for `llm-emit-token-metric` output. |
 | `log_request_and_response_bodies` | `bool` | `false` | Logs prompt and completion **content**. Review retention, access and regional requirements before enabling. |
@@ -299,3 +300,25 @@ The module strips each entry's `source` block before writing the named value. A 
 [`docs/policies.md`](../../docs/policies.md) documents the authoring rules — in particular that an apostrophe inside a single-quoted policy attribute terminates it, producing an error that looks nothing like its cause.
 
 **Not yet deployment-tested.** The modules validate, the policies render, and the test suite passes, but this has not been applied against a live subscription. Treat a first deployment as a genuine test and please report what differs.
+
+### Why `enable_diagnostics` is separate from `log_analytics_workspace_id`
+
+It would read better to create the diagnostic setting whenever a workspace id is supplied, and that is
+how this module was originally written. It does not work.
+
+The workspace is almost always created by the same root module that calls this one, so its id is
+unknown until apply. Terraform resolves `count` and `for_each` during planning, and it cannot decide
+how many instances an unknown value produces, so it refuses to plan at all:
+
+```
+Error: Invalid count argument
+The "count" value depends on resource attributes that cannot be determined until apply.
+```
+
+A bool the caller writes literally is always known, so the graph stays plannable in a single pass no
+matter where the workspace comes from. A precondition catches the mismatched case — `enable_diagnostics`
+on with no workspace id — at apply time, with an error that says which one to change.
+
+The same reasoning applies to `enable_private_endpoints` and `enable_diagnostics` in the
+`foundry-models` module. It is worth remembering as a general rule: **never gate `count` or `for_each`
+on whether another resource's attribute is null.**

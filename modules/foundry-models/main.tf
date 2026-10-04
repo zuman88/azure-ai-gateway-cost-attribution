@@ -29,7 +29,10 @@ locals {
     ])
   }
 
-  private_endpoints_enabled = var.private_endpoint_subnet_id != null
+  # Keyed off a literal bool rather than `private_endpoint_subnet_id != null`. The subnet is normally
+  # created in the same apply as these accounts, so its id is unknown at plan time, and Terraform
+  # cannot derive for_each keys from an unknown value - it refuses to plan at all.
+  private_endpoints_enabled = var.enable_private_endpoints
 }
 
 resource "azurerm_cognitive_account" "this" {
@@ -158,14 +161,26 @@ resource "azurerm_private_endpoint" "this" {
   tags = merge(var.tags, {
     "accelerator-component" = "foundry-models"
   })
+
+  lifecycle {
+    precondition {
+      condition     = var.private_endpoint_subnet_id != null
+      error_message = "enable_private_endpoints is true but private_endpoint_subnet_id is null. Supply the subnet, or set enable_private_endpoints = false."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------------------------------
 
+#
+# The for_each keys off a dedicated flag rather than `diagnostics_workspace_id != null`, because the
+# workspace is usually created by the same root module that calls this one. Its id is then unknown at
+# plan time, and Terraform cannot derive instance keys from an unknown value - it refuses to plan at
+# all. A bool the caller sets literally is always known, so the graph stays plannable in one pass.
 resource "azurerm_monitor_diagnostic_setting" "this" {
-  for_each = var.diagnostics_workspace_id != null ? var.accounts : {}
+  for_each = var.enable_diagnostics ? var.accounts : {}
 
   name                       = "diag-to-law"
   target_resource_id         = azurerm_cognitive_account.this[each.key].id
@@ -181,5 +196,12 @@ resource "azurerm_monitor_diagnostic_setting" "this" {
 
   enabled_metric {
     category = "AllMetrics"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.diagnostics_workspace_id != null
+      error_message = "enable_diagnostics is true but diagnostics_workspace_id is null. Set the workspace id, or set enable_diagnostics = false."
+    }
   }
 }

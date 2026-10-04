@@ -90,6 +90,7 @@ module "foundry" {
   # gateway needs - a dependency cycle between the two module blocks.
   gateway_principal_ids    = []
   diagnostics_workspace_id = module.observability.log_analytics_workspace_id
+  enable_diagnostics       = true
 }
 
 module "observability" {
@@ -168,6 +169,7 @@ module "ai_gateway" {
   application_insights_id                  = module.observability.application_insights_id
   application_insights_instrumentation_key = module.observability.application_insights_instrumentation_key
   log_analytics_workspace_id               = module.observability.log_analytics_workspace_id
+  enable_diagnostics                       = true
 
   # Cost attribution is off here, which means no pricing map is needed. Example 03 turns it on.
   enable_cost_attribution = false

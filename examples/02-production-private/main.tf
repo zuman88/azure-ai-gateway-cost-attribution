@@ -145,8 +145,10 @@ module "foundry" {
   local_auth_enabled = false
 
   private_endpoint_subnet_id = module.network.private_endpoint_subnet_id
+  enable_private_endpoints   = true
   private_dns_zone_ids       = module.network.private_dns_zone_ids_list
   diagnostics_workspace_id   = module.observability.log_analytics_workspace_id
+  enable_diagnostics         = true
 
   gateway_principal_ids = []
 }
@@ -277,6 +279,7 @@ module "ai_gateway" {
   application_insights_id                  = module.observability.application_insights_id
   application_insights_instrumentation_key = module.observability.application_insights_instrumentation_key
   log_analytics_workspace_id               = module.observability.log_analytics_workspace_id
+  enable_diagnostics                       = true
 
   # Full fidelity on this API only. Anything less and the chargeback ledger silently undercounts, since
   # the trace policy is subject to the same sampling percentage as everything else on the diagnostic.
@@ -313,7 +316,9 @@ module "cost_attribution" {
 
   alert_emails = var.alert_emails
 
-  enable_budget                  = true
+  # A budget with nowhere to send its notifications is a budget nobody finds out about, so the module
+  # refuses to build one. Supplying alert_emails is what turns it on.
+  enable_budget                  = length(var.alert_emails) > 0
   budget_scope_resource_group_id = azurerm_resource_group.this.id
   monthly_budget_usd             = var.monthly_budget_usd
 
