@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  # Nothing here touches a real subscription; `terraform validate` runs
+  # offline after `init -backend=false`.
+  TF_INPUT: "0"
+
+jobs:
+  terraform:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform validate
+        run: |
+          set -euo pipefail
+          for dir in \
+            modules/ai-gateway \
+            modules/cost-attribution \
+            modules/foundry-models \
+            modules/networking \
+            modules/observability \
+            examples/01-quickstart \
+            examples/02-production-private \
+            examples/03-cost-attribution
+          do
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -no-color
+            terraform -chdir="$dir" validate -no-color
+            echo "::endgroup::"
+          done
+
+  policies:
+    name: Policy templates render to valid XML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      # `templatefile()` is evaluated at plan time, so `terraform validate`
+      # never renders these templates and cannot see malformed XML in them.
+      # This check is the only thing standing between a typo and a failed
+      # apply against a live APIM instance.
+      - name: Render and parse policy templates
+        shell: pwsh
+        run: ./scripts/check_policies.ps1
+
+  python:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The test suite is deliberately dependency-free: standard library
+      # only, no network. If that ever stops being true, this step breaks
+      # loudly rather than silently pulling something in.
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  lint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - run: tflint --recursive --minimum-failure-severity=error
+
+  checkov:
+    name: Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          soft_fail: false
+          # Several checks assume a standalone deployment and misfire on a
+          # reusable module. Each skip is justified in SECURITY.md or an ADR
+          # rather than being waved through.
+          skip_check: >-
+            CKV_AZURE_109,CKV_TF_1

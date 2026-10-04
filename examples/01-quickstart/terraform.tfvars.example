@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and edit.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   terraform init && terraform apply
+
+# Must be globally unique enough to claim a Foundry custom subdomain.
+name_prefix      = "contoso-aigw"
+environment_name = "dev"
+
+# Check the model availability table before changing this; not every region carries every model.
+location = "eastus"
+
+publisher_name  = "Contoso AI Platform"
+publisher_email = "ai-platform@contoso.com"
+
+# A cap, not a retention policy: data beyond it is dropped rather than deferred.
+log_analytics_daily_quota_gb = 5
+
+tags = {
+  cost_centre = "CC-1234"
+  owner       = "ai-platform@contoso.com"
+}

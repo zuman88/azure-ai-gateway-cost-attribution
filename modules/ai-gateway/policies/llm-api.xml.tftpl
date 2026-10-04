@@ -1,0 +1,721 @@
+<!--
+  Foundry AI Gateway Accelerator - API-scope policy
+  ================================================
+
+  Rendered by Terraform from modules/ai-gateway/policies/llm-api.xml.tftpl. Do not edit in the portal;
+  the next `terraform apply` will overwrite it.
+
+  Pipeline:
+    inbound   validate -> resolve alias -> normalise body -> emit token metric -> safety -> cache lookup
+              -> authenticate to Foundry -> select backend pool
+    backend   single forward-request; failover is handled by the pool's circuit breakers, not by policy
+    outbound  extract usage -> cost attribution -> governance headers -> cache store
+    on-error  sanitised error surface plus failure telemetry
+
+  Authoring note: attributes are delimited with single quotes so that C# string literals inside policy
+  expressions can use ordinary double quotes. This is valid XML and markedly more readable than the
+  &quot;-escaped form the portal emits.
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- ============================================================================================
+         1. Request identity and correlation
+         ============================================================================================ -->
+    <set-variable name="requestStart" value="@(DateTime.UtcNow)" />
+    <set-variable name="correlationId" value='@{
+        var header = context.Request.Headers.GetValueOrDefault("x-correlation-id", string.Empty);
+        return string.IsNullOrEmpty(header) ? context.RequestId.ToString() : header;
+    }' />
+    <set-variable name="consumerProduct" value='@(context.Product == null ? "unassigned" : context.Product.Name)' />
+    <set-variable name="consumerSubscription" value='@(context.Subscription == null ? "anonymous" : context.Subscription.Id)' />
+
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+    <set-header name="x-gateway-environment" exists-action="override">
+      <value>{{${environment_named_value}}}</value>
+    </set-header>
+
+%{ if entra_enabled ~}
+    <!-- ============================================================================================
+         1b. Caller authentication (Microsoft Entra ID)
+
+         Validated at API scope rather than per operation: every operation on this API reaches a paid
+         model, so there is no route that should be reachable without a token.
+
+         The token is also the attribution identity. A subscription key is a bearer secret that can be
+         copied into a second application without trace, at which point the chargeback report is wrong
+         and nothing says so. An Entra token is bound to an app registration or a managed identity,
+         and it expires.
+         ============================================================================================ -->
+    <validate-azure-ad-token
+        tenant-id="${entra_tenant_id}"
+        header-name="${entra_header_name}"
+        output-token-variable-name="entraToken"
+        failed-validation-httpcode="${entra_failed_httpcode}"
+        failed-validation-error-message="Caller authentication failed. Supply a valid Microsoft Entra bearer token in the ${entra_header_name} header." >
+%{ if length(entra_client_application_ids) > 0 ~}
+      <client-application-ids>
+%{ for application_id in entra_client_application_ids ~}
+        <application-id>${application_id}</application-id>
+%{ endfor ~}
+      </client-application-ids>
+%{ endif ~}
+%{ if length(entra_audiences) > 0 ~}
+      <audiences>
+%{ for audience in entra_audiences ~}
+        <audience>${audience}</audience>
+%{ endfor ~}
+      </audiences>
+%{ endif ~}
+%{ if length(entra_required_claims) > 0 ~}
+      <required-claims>
+%{ for claim in entra_required_claims ~}
+        <claim name="${claim.name}" match="${claim.match}"${claim.separator == null ? "" : format(" separator=\"%s\"", claim.separator)}>
+%{ for value in claim.values ~}
+          <value>${value}</value>
+%{ endfor ~}
+        </claim>
+%{ endfor ~}
+      </required-claims>
+%{ endif ~}
+    </validate-azure-ad-token>
+
+    <!-- Resolve the attribution identity from the validated token.
+         Claim order matters: "appid" carries the calling application's client id in v1.0 tokens and is
+         the right answer for the service-to-service traffic a model gateway almost always sees. v2.0
+         tokens use "azp" instead, and managed identities or user-delegated calls fall through to
+         "oid"/"sub". An unresolvable identity is named explicitly rather than left blank - an
+         unattributed request should look wrong in a report, not invisible. -->
+    <set-variable name="consumerId" value='@{
+        var jwt = (Jwt)context.Variables["entraToken"];
+        var claimOrder = new string[] { ${join(", ", formatlist("\"%s\"", entra_claim_order))} };
+        foreach (var claimName in claimOrder)
+        {
+            var claimValue = jwt.Claims.GetValueOrDefault(claimName, string.Empty);
+            if (!string.IsNullOrEmpty(claimValue))
+            {
+                return claimValue;
+            }
+        }
+        return "unattributed";
+    }' />
+    <set-variable name="consumerType" value='@("entra")' />
+%{ else ~}
+    <!-- No Entra validation configured: attribution falls back to the APIM subscription id. See the
+         caller_authentication variable for why that is a weaker signal than a token. -->
+    <set-variable name="consumerId" value='@((string)context.Variables["consumerSubscription"])' />
+    <set-variable name="consumerType" value='@("subscription")' />
+%{ endif ~}
+
+%{ if length(entra_consumer_names) > 0 ~}
+    <set-variable name="consumerName" value='@{
+        var friendlyNames = new Dictionary&lt;string, string&gt; {
+            ${indent(12, join(",\n", [for key, value in entra_consumer_names : format("{ \"%s\", \"%s\" }", key, value)]))}
+        };
+        var id = (string)context.Variables["consumerId"];
+        return friendlyNames.ContainsKey(id) ? friendlyNames[id] : id;
+    }' />
+%{ else ~}
+    <set-variable name="consumerName" value='@((string)context.Variables["consumerId"])' />
+%{ endif ~}
+
+    <!-- ============================================================================================
+         2. Model discovery
+         GET /models answers from the gateway's own catalogue. Clients and agent frameworks use it to
+         discover which aliases exist without being handed a wiki page, and it never touches a backend.
+         Handled here because API-scope inbound policy runs before any operation-scope policy.
+         ============================================================================================ -->
+    <choose>
+      <when condition='@(context.Operation.Id == "list-models")'>
+        <return-response>
+          <set-status code="200" reason="OK" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+              var routes = JObject.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("{{${routes_named_value}}}")));
+              var data = new JArray();
+              foreach (var item in routes.Properties())
+              {
+                  var route = item.Value as JObject;
+                  data.Add(new JObject(
+                    new JProperty("id", item.Name),
+                    new JProperty("object", "model"),
+                    new JProperty("owned_by", "${environment_name}"),
+                    new JProperty("description", route != null &amp;&amp; route["description"] != null ? route["description"].ToString() : string.Empty)
+                  ));
+              }
+              return new JObject(
+                new JProperty("object", "list"),
+                new JProperty("data", data)
+              ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ============================================================================================
+         3. Parse the request body once and reuse it
+         Every downstream expression reads this variable instead of re-parsing, which matters because
+         body parsing is the most expensive operation in the inbound path.
+         ============================================================================================ -->
+    <set-variable name="requestBody" value='@{
+        try
+        {
+            return context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+        }
+        catch (Exception)
+        {
+            return new JObject();
+        }
+    }' />
+
+    <set-variable name="requestedModel" value='@{
+        var body = (JObject)context.Variables["requestBody"];
+        var model = body["model"];
+        return model == null ? string.Empty : model.ToString();
+    }' />
+
+    <choose>
+      <when condition='@(string.IsNullOrEmpty((string)context.Variables["requestedModel"]))'>
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+              return new JObject(
+                new JProperty("error", new JObject(
+                  new JProperty("code", "missing_model"),
+                  new JProperty("message", "The request body must include a 'model' field naming a model alias published by this gateway."),
+                  new JProperty("correlationId", (string)context.Variables["correlationId"])
+                ))
+              ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ============================================================================================
+         3. Resolve the client-facing alias to a backend pool and a physical deployment
+         The route table lives in an APIM named value so that adding a model is a named-value update
+         rather than a policy deployment.
+         ============================================================================================ -->
+    <!-- The route table and the pricing map are held as base64 in their named values. A raw JSON named
+         value would be substituted verbatim into the surrounding C# string literal and its double
+         quotes would terminate that literal, so the policy would fail to compile the moment a real
+         catalogue was loaded. Base64 has no characters that can escape a string literal. -->
+    <set-variable name="targetPool" value='@{
+        var routes = JObject.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("{{${routes_named_value}}}")));
+        var route = routes[(string)context.Variables["requestedModel"]] as JObject;
+        if (route == null || route["pool"] == null)
+        {
+            return string.Empty;
+        }
+        return route["pool"].ToString();
+    }' />
+
+    <set-variable name="targetDeployment" value='@{
+        var routes = JObject.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("{{${routes_named_value}}}")));
+        var route = routes[(string)context.Variables["requestedModel"]] as JObject;
+        if (route == null || route["deployment"] == null)
+        {
+            return (string)context.Variables["requestedModel"];
+        }
+        return route["deployment"].ToString();
+    }' />
+
+    <choose>
+      <when condition='@(string.IsNullOrEmpty((string)context.Variables["targetPool"]))'>
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+              var routes = JObject.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("{{${routes_named_value}}}")));
+              var available = new JArray();
+              foreach (var item in routes.Properties())
+              {
+                  available.Add(item.Name);
+              }
+              return new JObject(
+                new JProperty("error", new JObject(
+                  new JProperty("code", "unknown_model"),
+                  new JProperty("message", "The requested model alias is not published by this gateway."),
+                  new JProperty("requestedModel", (string)context.Variables["requestedModel"]),
+                  new JProperty("availableModels", available),
+                  new JProperty("correlationId", (string)context.Variables["correlationId"])
+                ))
+              ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ============================================================================================
+         4. Normalise the outbound body
+         a) Swap the client-facing alias for the physical deployment name. The Azure OpenAI v1 API
+            takes the deployment name in the `model` field, so no path rewriting per deployment is
+            needed and no api-version has to be tracked.
+         b) Force `stream_options.include_usage` on streamed requests. Without it the model returns no
+            usage block, token limits fall back to estimation, and cost attribution records a zero.
+            Clients frequently forget this, so the gateway repairs it rather than silently
+            under-reporting.
+         ============================================================================================ -->
+    <set-variable name="isStreaming" value='@{
+        var body = (JObject)context.Variables["requestBody"];
+        var stream = body["stream"];
+        return stream != null &amp;&amp; string.Equals(stream.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+    }' />
+
+    <set-body>@{
+        var body = (JObject)context.Variables["requestBody"];
+        body["model"] = (string)context.Variables["targetDeployment"];
+
+        if ((bool)context.Variables["isStreaming"])
+        {
+            var options = body["stream_options"] as JObject;
+            if (options == null)
+            {
+                options = new JObject();
+                body["stream_options"] = options;
+            }
+            if (options["include_usage"] == null)
+            {
+                options["include_usage"] = true;
+            }
+        }
+
+        return body.ToString(Newtonsoft.Json.Formatting.None);
+    }</set-body>
+
+    <!-- ============================================================================================
+         5. Token metrics for near-real-time dashboards and alerts
+         Azure Monitor custom metrics allow at most five custom dimensions, 100 unique values per
+         dimension and 1000 active time series per namespace. Exceeding any of those silently discards
+         data, so only bounded dimensions appear here. Per-subscription attribution is deliberately
+         left to the Application Insights ledger in the outbound section, which has no such limit.
+         ============================================================================================ -->
+    <llm-emit-token-metric namespace="${metric_namespace}">
+      <dimension name="Product ID" />
+      <dimension name="Operation ID" />
+      <dimension name="ModelAlias" value='@((string)context.Variables["requestedModel"])' />
+      <dimension name="Environment" value="{{${environment_named_value}}}" />
+    </llm-emit-token-metric>
+
+%{ if entra_gateway_token_limit != null ~}
+    <!-- ============================================================================================
+         5b. Gateway-wide token limit
+
+         Present only in entra_id mode. Without a subscription key APIM cannot associate the request
+         with a product, so product-scope policy - and with it the per-product llm-token-limit - never
+         runs. A single limit keyed on the caller identity is applied here instead, so that one
+         misbehaving client still cannot drain the quota for everyone else.
+
+         estimate-prompt-tokens is false: the real prompt token count is taken from the model's usage
+         response, which is exact. The cost is that the limit is enforced one request late, which is
+         the right trade for a backstop control.
+         ============================================================================================ -->
+    <llm-token-limit
+        counter-key='@((string)context.Variables["consumerId"])'
+        tokens-per-minute="${entra_gateway_token_limit}"
+        estimate-prompt-tokens="false"
+        retry-after-header-name="retry-after"
+        tokens-consumed-header-name="x-ai-tokens-consumed"
+        remaining-tokens-header-name="x-ai-tokens-remaining" />
+%{ endif ~}
+
+%{ if enable_content_safety ~}
+    <!-- ============================================================================================
+         6. Inbound content safety
+         Applied to generative operations only. Embeddings are excluded: moderating an embedding input
+         adds latency and per-transaction cost without meaningfully reducing risk.
+         ============================================================================================ -->
+    <choose>
+      <when condition='@(context.Operation.Id != "create-embedding")'>
+        <llm-content-safety backend-id="${content_safety_backend_id}" shield-prompt="${content_safety_shield_prompt}">
+          <categories output-type="EightSeverityLevels">
+            <category name="Hate" threshold="${content_safety_threshold_hate}" />
+            <category name="SelfHarm" threshold="${content_safety_threshold_self_harm}" />
+            <category name="Sexual" threshold="${content_safety_threshold_sexual}" />
+            <category name="Violence" threshold="${content_safety_threshold_violence}" />
+          </categories>
+        </llm-content-safety>
+      </when>
+    </choose>
+%{ endif ~}
+
+%{ if enable_semantic_cache ~}
+    <!-- ============================================================================================
+         7. Semantic cache lookup
+         Only safe for non-streaming, deterministic-ish requests. High-temperature calls are excluded
+         so that callers asking for variety still get it.
+         ============================================================================================ -->
+    <choose>
+      <when condition='@{
+          if ((bool)context.Variables["isStreaming"]) { return false; }
+          if (context.Operation.Id == "create-embedding") { return false; }
+          var body = (JObject)context.Variables["requestBody"];
+          var temperature = body["temperature"];
+          if (temperature == null) { return true; }
+          double value;
+          return double.TryParse(temperature.ToString(), out value) &amp;&amp; value &lt;= ${semantic_cache_max_temperature};
+      }'>
+        <llm-semantic-cache-lookup score-threshold="${semantic_cache_score_threshold}"
+                                   embeddings-backend-id="${semantic_cache_embeddings_backend_id}"
+                                   embeddings-backend-auth="system-assigned"
+                                   max-message-count="${semantic_cache_max_message_count}">
+          <vary-by>@((string)context.Variables["requestedModel"])</vary-by>
+          <vary-by>@((string)context.Variables["consumerProduct"])</vary-by>
+        </llm-semantic-cache-lookup>
+      </when>
+    </choose>
+%{ endif ~}
+
+    <!-- ============================================================================================
+         8. Authenticate to Foundry with the gateway's managed identity
+         Combined with local_auth_enabled = false on the Foundry accounts, this makes key-based access
+         impossible rather than merely unused. The inbound api-key header is stripped so a client
+         cannot smuggle its own credential through to the backend.
+         ============================================================================================ -->
+    <authentication-managed-identity resource="${backend_auth_resource}"
+                                     output-token-variable-name="backendToken"
+                                     ignore-error="false" />
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables["backendToken"])</value>
+    </set-header>
+    <set-header name="api-key" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+
+    <!-- ============================================================================================
+         9. Route to the backend pool
+         One statement replaces the retry-over-an-indexed-backend-list pattern. Load balancing,
+         weighting, priority spillover and circuit breaking are all properties of the pool, evaluated
+         by the gateway itself and shared across requests.
+         ============================================================================================ -->
+    <set-backend-service backend-id='@((string)context.Variables["targetPool"])' />
+    <rewrite-uri template='@("/openai/v1" + context.Operation.UrlTemplate)' copy-unmatched-params="false" />
+  </inbound>
+
+  <backend>
+    <forward-request timeout="${forward_timeout_seconds}"
+                     buffer-request-body="true"
+                     buffer-response="${buffer_response}"
+                     fail-on-error-status-code="false" />
+  </backend>
+
+  <outbound>
+    <base />
+
+    <!-- ============================================================================================
+         10. Usage extraction
+         Written to accept both the Chat Completions shape (prompt_tokens / completion_tokens /
+         prompt_tokens_details) and the Responses API shape (input_tokens / output_tokens /
+         input_tokens_details), because a single gateway serves both.
+         ============================================================================================ -->
+    <set-variable name="responseBody" value='@{
+        if (context.Response == null || context.Response.Body == null)
+        {
+            return new JObject();
+        }
+        if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode >= 300)
+        {
+            return new JObject();
+        }
+        var contentType = context.Response.Headers.GetValueOrDefault("Content-Type", string.Empty);
+        if (string.IsNullOrEmpty(contentType) || !contentType.ToLowerInvariant().Contains("application/json"))
+        {
+            return new JObject();
+        }
+        try
+        {
+            return context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+        }
+        catch (Exception)
+        {
+            return new JObject();
+        }
+    }' />
+
+    <set-variable name="promptTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var token = usage["prompt_tokens"] ?? usage["input_tokens"];
+        return token == null ? 0 : (int)token;
+    }' />
+
+    <set-variable name="completionTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var token = usage["completion_tokens"] ?? usage["output_tokens"];
+        return token == null ? 0 : (int)token;
+    }' />
+
+    <set-variable name="totalTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var token = usage["total_tokens"];
+        if (token != null) { return (int)token; }
+        return (int)context.Variables["promptTokens"] + (int)context.Variables["completionTokens"];
+    }' />
+
+    <!-- Cached prompt tokens are a SUBSET of prompt_tokens, not an addition to them. -->
+    <set-variable name="cachedTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var details = usage["prompt_tokens_details"] ?? usage["input_tokens_details"];
+        if (details == null) { return 0; }
+        var token = details["cached_tokens"];
+        return token == null ? 0 : (int)token;
+    }' />
+
+    <!-- Cache-write tokens are billed at a premium by some models. Absent on models that do not bill
+         them, in which case this is zero and the cost expression collapses to the classic form. -->
+    <set-variable name="cacheWriteTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var details = usage["prompt_tokens_details"] ?? usage["input_tokens_details"];
+        if (details == null) { return 0; }
+        var token = details["cache_write_tokens"] ?? details["cache_creation_tokens"];
+        return token == null ? 0 : (int)token;
+    }' />
+
+    <!-- Reasoning tokens are already counted inside completion_tokens. Reported for visibility only;
+         adding them to the cost expression would double-charge every reasoning call. -->
+    <set-variable name="reasoningTokens" value='@{
+        var usage = ((JObject)context.Variables["responseBody"])["usage"];
+        if (usage == null) { return 0; }
+        var details = usage["completion_tokens_details"] ?? usage["output_tokens_details"];
+        if (details == null) { return 0; }
+        var token = details["reasoning_tokens"];
+        return token == null ? 0 : (int)token;
+    }' />
+
+    <set-variable name="billablePromptTokens" value='@(Math.Max(0,
+        (int)context.Variables["promptTokens"]
+      - (int)context.Variables["cachedTokens"]
+      - (int)context.Variables["cacheWriteTokens"]))' />
+
+    <set-variable name="backendModel" value='@{
+        var body = (JObject)context.Variables["responseBody"];
+        return body["model"] == null ? (string)context.Variables["targetDeployment"] : body["model"].ToString();
+    }' />
+
+    <!-- A usage block is absent when the response was served from cache, when a stream terminated
+         early, or when the client suppressed usage reporting. Flagging it lets the chargeback report
+         separate "free" from "unmeasured", which are very different things. -->
+    <set-variable name="usageMeasured" value='@(((JObject)context.Variables["responseBody"])["usage"] != null)' />
+
+%{ if enable_cost_attribution ~}
+    <!-- ============================================================================================
+         11. Cost attribution
+         Rates are per 1,000,000 tokens to match how Azure publishes them. Full precision is emitted;
+         rounding happens in the workbook. Rounding here and then summing millions of rows accumulates
+         a material error.
+         ============================================================================================ -->
+    <!-- Resolve the applicable rate card once, then read everything else from it.
+         Done in one pass because the pricing map is base64 and parsing it is not free; the previous
+         shape parsed it twice per request, once for rates and once for the effective date.
+
+         Context tiers: Azure prices some models by input length. GPT-5.5, for example, doubles its
+         input rate and raises output by half above 272,000 prompt tokens. Two properties of that
+         pricing are easy to get wrong and both are checked against Azure's own published example:
+
+           1. The threshold is measured on TOTAL prompt tokens, cached ones included. Context length
+              is what the model had to attend to; caching changes the price of a token, not its
+              existence. So this reads promptTokens, not billablePromptTokens.
+           2. It is NOT marginal. Crossing the threshold reprices the ENTIRE request at the higher
+              rate - it does not bill the first 272,000 tokens cheaply and the remainder dearly.
+
+         A model with no contextTiers resolves to the base entry and behaves exactly as before. -->
+    <set-variable name="resolvedRates" value='@{
+        var prices = JObject.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("{{${pricing_named_value}}}")));
+        var entry = prices[(string)context.Variables["requestedModel"]] as JObject;
+        if (entry == null)
+        {
+            return new JObject(new JProperty("tier", "unpriced"));
+        }
+
+        var promptTokens = (int)context.Variables["promptTokens"];
+        JObject chosen = entry;
+        var tierName = "base";
+
+        var tiers = entry["contextTiers"] as JArray;
+        if (tiers != null)
+        {
+            long highestFloorMatched = -1;
+            foreach (var item in tiers)
+            {
+                var tier = item as JObject;
+                if (tier == null || tier["minPromptTokens"] == null) { continue; }
+
+                var floor = (long)tier["minPromptTokens"];
+                if (promptTokens &gt;= floor &amp;&amp; floor &gt; highestFloorMatched)
+                {
+                    highestFloorMatched = floor;
+                    chosen = tier;
+                    tierName = tier["name"] == null ? ("min" + floor.ToString()) : tier["name"].ToString();
+                }
+            }
+        }
+
+        // Cloned so the tier label and inherited fields never mutate the parsed map.
+        var resolved = (JObject)chosen.DeepClone();
+        resolved["tier"] = tierName;
+        if (resolved["unit"] == null &amp;&amp; entry["unit"] != null) { resolved["unit"] = entry["unit"]; }
+        if (resolved["effectiveDate"] == null &amp;&amp; entry["effectiveDate"] != null) { resolved["effectiveDate"] = entry["effectiveDate"]; }
+        return resolved;
+    }' />
+
+    <set-variable name="contextTier" value='@(((JObject)context.Variables["resolvedRates"])["tier"].ToString())' />
+
+    <set-variable name="estimatedCostUSD" value='@{
+        var rates = (JObject)context.Variables["resolvedRates"];
+        if (rates["tier"].ToString() == "unpriced")
+        {
+            return -1.0;
+        }
+
+        double unit = rates["unit"] == null ? 1000000.0 : (double)rates["unit"];
+
+        // Every rate is read from the resolved card, never from the base entry. A tier that omits a
+        // cached rate falls back to its OWN input rate rather than inheriting the base rate, which
+        // would quietly apply a short-context cached price to a long-context request - an error in the
+        // direction that nobody notices, because the bill comes out lower than it should.
+        double input       = rates["input"]       == null ? 0.0   : (double)rates["input"];
+        double cachedInput = rates["cachedInput"] == null ? input : (double)rates["cachedInput"];
+        double cacheWrite  = rates["cacheWrite"]  == null ? input : (double)rates["cacheWrite"];
+        double output      = rates["output"]      == null ? 0.0   : (double)rates["output"];
+
+        double cost =
+            ((int)context.Variables["billablePromptTokens"] / unit) * input
+          + ((int)context.Variables["cachedTokens"]         / unit) * cachedInput
+          + ((int)context.Variables["cacheWriteTokens"]     / unit) * cacheWrite
+          + ((int)context.Variables["completionTokens"]     / unit) * output;
+
+        return cost;
+    }' />
+
+    <set-variable name="pricingEffectiveDate" value='@{
+        var rates = (JObject)context.Variables["resolvedRates"];
+        return rates["effectiveDate"] == null ? "unknown" : rates["effectiveDate"].ToString();
+    }' />
+
+    <!-- The chargeback ledger.
+         This reaches Application Insights only because the module pins the LLM API's diagnostic
+         verbosity to "verbose" and the logger's sampling to 100 percent. At default settings the
+         trace policy emits nothing and cost tracking silently reports zero. -->
+    <trace source="ai-gateway" severity="information">
+      <message>@("llm.request " + (string)context.Variables["requestedModel"])</message>
+      <metadata name="schemaVersion" value="1" />
+      <metadata name="correlationId" value='@((string)context.Variables["correlationId"])' />
+      <metadata name="environment" value="{{${environment_named_value}}}" />
+      <metadata name="product" value='@((string)context.Variables["consumerProduct"])' />
+      <metadata name="subscriptionId" value='@((string)context.Variables["consumerSubscription"])' />
+      <!-- consumerId is the identity the spend is charged to: an Entra claim value when caller
+           authentication is enabled, otherwise the subscription id. consumerType records which, so a
+           report can tell a token-backed attribution from a key-backed one rather than treating both
+           as equally trustworthy. -->
+      <metadata name="consumerId" value='@((string)context.Variables["consumerId"])' />
+      <metadata name="consumerName" value='@((string)context.Variables["consumerName"])' />
+      <metadata name="consumerType" value='@((string)context.Variables["consumerType"])' />
+      <metadata name="apiId" value="@(context.Api.Id)" />
+      <metadata name="operationId" value="@(context.Operation.Id)" />
+      <metadata name="modelAlias" value='@((string)context.Variables["requestedModel"])' />
+      <metadata name="deployment" value='@((string)context.Variables["targetDeployment"])' />
+      <metadata name="backendModel" value='@((string)context.Variables["backendModel"])' />
+      <metadata name="pool" value='@((string)context.Variables["targetPool"])' />
+      <metadata name="statusCode" value="@(context.Response.StatusCode.ToString())" />
+      <metadata name="streaming" value='@(((bool)context.Variables["isStreaming"]).ToString())' />
+      <metadata name="usageMeasured" value='@(((bool)context.Variables["usageMeasured"]).ToString())' />
+      <metadata name="promptTokens" value='@(((int)context.Variables["promptTokens"]).ToString())' />
+      <metadata name="billablePromptTokens" value='@(((int)context.Variables["billablePromptTokens"]).ToString())' />
+      <metadata name="cachedTokens" value='@(((int)context.Variables["cachedTokens"]).ToString())' />
+      <metadata name="cacheWriteTokens" value='@(((int)context.Variables["cacheWriteTokens"]).ToString())' />
+      <metadata name="completionTokens" value='@(((int)context.Variables["completionTokens"]).ToString())' />
+      <metadata name="reasoningTokens" value='@(((int)context.Variables["reasoningTokens"]).ToString())' />
+      <metadata name="totalTokens" value='@(((int)context.Variables["totalTokens"]).ToString())' />
+      <metadata name="estimatedCostUSD" value='@(((double)context.Variables["estimatedCostUSD"]).ToString("R", System.Globalization.CultureInfo.InvariantCulture))' />
+      <metadata name="pricingEffectiveDate" value='@((string)context.Variables["pricingEffectiveDate"])' />
+      <!-- Which rate card priced this request. "base" for a flat-rate model; a tier name such as
+           "long" when input length pushed it into a higher band. Without this a long-context bill
+           looks like a usage spike rather than a pricing one. -->
+      <metadata name="contextTier" value='@((string)context.Variables["contextTier"])' />
+      <metadata name="latencyMs" value='@(((DateTime.UtcNow - (DateTime)context.Variables["requestStart"]).TotalMilliseconds).ToString("F0"))' />
+    </trace>
+
+    <set-header name="x-ai-estimated-cost-usd" exists-action="override">
+      <value>@(((double)context.Variables["estimatedCostUSD"]).ToString("F8", System.Globalization.CultureInfo.InvariantCulture))</value>
+    </set-header>
+%{ endif ~}
+
+%{ if enable_semantic_cache ~}
+    <llm-semantic-cache-store duration="${semantic_cache_duration_seconds}" />
+%{ endif ~}
+
+    <!-- ============================================================================================
+         12. Governance headers
+         These make gateway behaviour observable from the client without needing portal access, which
+         materially shortens support conversations.
+         ============================================================================================ -->
+    <set-header name="x-ai-model-alias" exists-action="override">
+      <value>@((string)context.Variables["requestedModel"])</value>
+    </set-header>
+    <set-header name="x-ai-deployment" exists-action="override">
+      <value>@((string)context.Variables["targetDeployment"])</value>
+    </set-header>
+    <set-header name="x-ai-pool" exists-action="override">
+      <value>@((string)context.Variables["targetPool"])</value>
+    </set-header>
+    <set-header name="x-ai-total-tokens" exists-action="override">
+      <value>@(((int)context.Variables["totalTokens"]).ToString())</value>
+    </set-header>
+    <set-header name="x-ai-cached-tokens" exists-action="override">
+      <value>@(((int)context.Variables["cachedTokens"]).ToString())</value>
+    </set-header>
+    <set-header name="x-ai-latency-ms" exists-action="override">
+      <value>@(((DateTime.UtcNow - (DateTime)context.Variables["requestStart"]).TotalMilliseconds).ToString("F0"))</value>
+    </set-header>
+    <!-- Echoing the resolved consumer lets a caller confirm which identity its spend lands against,
+         which is the difference between a chargeback dispute and a one-line answer. -->
+    <set-header name="x-ai-consumer" exists-action="override">
+      <value>@((string)context.Variables["consumerName"])</value>
+    </set-header>
+
+    <!-- Never leak backend hostnames, Foundry resource names, or upstream rate-limit internals. -->
+    <set-header name="x-ms-region" exists-action="delete" />
+    <set-header name="azureml-model-session" exists-action="delete" />
+    <set-header name="apim-request-id" exists-action="delete" />
+  </outbound>
+
+  <on-error>
+    <base />
+
+    <trace source="ai-gateway" severity="error">
+      <message>@("llm.error " + (context.LastError == null ? "unknown" : context.LastError.Reason))</message>
+      <metadata name="schemaVersion" value="1" />
+      <metadata name="correlationId" value='@((string)(context.Variables.ContainsKey("correlationId") ? context.Variables["correlationId"] : context.RequestId.ToString()))' />
+      <metadata name="product" value='@((string)(context.Variables.ContainsKey("consumerProduct") ? context.Variables["consumerProduct"] : "unassigned"))' />
+      <!-- ContainsKey guards are mandatory here: a token rejected by validate-azure-ad-token fails
+           before consumerId is ever set, and that is exactly the error this trace must record. -->
+      <metadata name="consumerId" value='@((string)(context.Variables.ContainsKey("consumerId") ? context.Variables["consumerId"] : "unauthenticated"))' />
+      <metadata name="consumerType" value='@((string)(context.Variables.ContainsKey("consumerType") ? context.Variables["consumerType"] : "unauthenticated"))' />
+      <metadata name="modelAlias" value='@((string)(context.Variables.ContainsKey("requestedModel") ? context.Variables["requestedModel"] : "unknown"))' />
+      <metadata name="pool" value='@((string)(context.Variables.ContainsKey("targetPool") ? context.Variables["targetPool"] : "unknown"))' />
+      <metadata name="errorSource" value="@(context.LastError == null ? string.Empty : context.LastError.Source)" />
+      <metadata name="errorReason" value="@(context.LastError == null ? string.Empty : context.LastError.Reason)" />
+      <metadata name="errorMessage" value="@(context.LastError == null ? string.Empty : context.LastError.Message)" />
+      <metadata name="statusCode" value='@(context.Response == null ? "0" : context.Response.StatusCode.ToString())' />
+    </trace>
+
+    <!-- Surface a correlation id so a caller can report a failure that operators can actually find,
+         without exposing internal failure detail. -->
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@((string)(context.Variables.ContainsKey("correlationId") ? context.Variables["correlationId"] : context.RequestId.ToString()))</value>
+    </set-header>
+  </on-error>
+</policies>

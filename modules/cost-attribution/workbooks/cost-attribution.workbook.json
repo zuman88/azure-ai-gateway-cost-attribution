@@ -1,0 +1,229 @@
+{
+  "version": "Notebook/1.0",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# AI Gateway chargeback \u2014 ${environment_name}\n\nAllocates Microsoft Foundry spend across the applications that consume the gateway.\n\n**How to read this.** The gateway's estimated cost is a *management signal*, not an invoice. It is computed from token counts and a published rate card, so it knows nothing about your enterprise discount, your reservations, or PTU amortisation. Use the **share of tokens** to decide *who* consumed capacity, and Azure Cost Management to decide *how much* was actually spent. The allocation section below does exactly that: it takes the real invoice figure you enter and divides it by measured consumption.\n\nThe **data quality** section at the bottom is not optional reading. If unpriced or unmeasured requests are non-zero, every number above it is understated."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "range",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": { "durationMs": 2592000000 },
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 86400000 },
+                { "durationMs": 604800000 },
+                { "durationMs": 2592000000 },
+                { "durationMs": 7776000000 }
+              ]
+            }
+          },
+          {
+            "id": "actualcost",
+            "version": "KqlParameterItem/1.0",
+            "name": "ActualCostUSD",
+            "label": "Actual Foundry spend for this period (USD)",
+            "type": 1,
+            "description": "Take this from Azure Cost Management for the Foundry resources behind this gateway. Leave blank to fall back to the gateway's own estimate.",
+            "value": ""
+          },
+          {
+            "id": "prodfilter",
+            "version": "KqlParameterItem/1.0",
+            "name": "Product",
+            "label": "Product tier",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "typeSettings": { "additionalResourceOptions": ["value::all"], "showDefault": false },
+            "query": "traces\n| where message startswith \"llm.request\"\n| extend product = tostring(customDimensions[\"product\"])\n| distinct product\n| order by product asc",
+            "queryType": 0,
+            "resourceType": "microsoft.insights/components",
+            "value": ["value::all"]
+          }
+        ],
+        "style": "pills"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Headline" },
+      "name": "headline-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    totalTokens = toint(customDimensions[\"totalTokens\"]),\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product})\n| summarize\n    Requests = count(),\n    Tokens = sum(totalTokens),\n    [\"Estimated USD\"] = round(sum(iff(estimatedCostUSD > 0, estimatedCostUSD, 0.0)), 2),\n    Consumers = dcount(tostring(customDimensions[\"subscriptionId\"])),\n    Models = dcount(tostring(customDimensions[\"modelAlias\"]))",
+        "size": 4,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "tiles",
+        "tileSettings": {
+          "showBorder": true,
+          "titleContent": { "columnMatch": "Requests", "formatter": 12 }
+        }
+      },
+      "name": "headline"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Allocation by consumer\n\nShare of tokens is the allocation key. When you enter an actual spend figure above, the **Allocated USD** column divides that real figure by each consumer's share; otherwise it shows the gateway's own estimate. The two columns sitting side by side is the point \u2014 a large gap between them means the pricing map needs regenerating." },
+      "name": "allocation-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let registry = print reg = parse_json('${consumer_registry}')\n| mv-expand reg\n| project\n    consumer = tostring(reg.consumer),\n    costCentre = tostring(reg.costCentre),\n    owner = tostring(reg.owner),\n    businessUnit = tostring(reg.businessUnit),\n    monthlyBudget = todouble(reg.monthlyBudget);\nlet actual = todouble(\"{ActualCostUSD}\");\nlet ledger = traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    consumer = tostring(customDimensions[\"subscriptionId\"]),\n    totalTokens = toint(customDimensions[\"totalTokens\"]),\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product});\nlet totals = toscalar(ledger | summarize sum(totalTokens));\nledger\n| summarize\n    Requests = count(),\n    Tokens = sum(totalTokens),\n    EstimatedUSD = round(sum(iff(estimatedCostUSD > 0, estimatedCostUSD, 0.0)), 2)\n    by consumer, product\n| extend [\"Share of tokens\"] = iff(totals == 0, 0.0, round(todouble(Tokens) / totals, 4))\n| extend [\"Allocated USD\"] = round(iff(isnan(actual) or isnull(actual), todouble(EstimatedUSD), actual * [\"Share of tokens\"]), 2)\n| join kind=leftouter registry on consumer\n| project\n    Consumer = consumer,\n    Product = product,\n    [\"Cost centre\"] = coalesce(costCentre, \"unassigned\"),\n    Owner = coalesce(owner, \"\"),\n    Requests,\n    Tokens,\n    [\"Share of tokens\"],\n    [\"Estimated USD\"] = EstimatedUSD,\n    [\"Allocated USD\"],\n    [\"Budget USD\"] = monthlyBudget,\n    [\"Budget used\"] = iff(isnull(monthlyBudget) or monthlyBudget == 0, todouble(0), round([\"Allocated USD\"] / monthlyBudget, 3))\n| order by [\"Allocated USD\"] desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            { "columnMatch": "Share of tokens", "formatter": 5, "formatOptions": { "palette": "blue" }, "numberFormat": { "unit": 0, "options": { "style": "percent", "maximumFractionDigits": 2 } } },
+            { "columnMatch": "Allocated USD", "formatter": 8, "formatOptions": { "palette": "greenRed" }, "numberFormat": { "unit": 0, "options": { "style": "currency", "currency": "USD" } } },
+            { "columnMatch": "Estimated USD", "formatter": 0, "numberFormat": { "unit": 0, "options": { "style": "currency", "currency": "USD" } } },
+            { "columnMatch": "Budget used", "formatter": 5, "formatOptions": { "palette": "greenRed" }, "numberFormat": { "unit": 0, "options": { "style": "percent", "maximumFractionDigits": 1 } } }
+          ]
+        }
+      },
+      "name": "allocation-by-consumer"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Where the money goes" },
+      "name": "breakdown-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    modelAlias = tostring(customDimensions[\"modelAlias\"]),\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product})\n| where estimatedCostUSD > 0\n| summarize [\"Estimated USD\"] = round(sum(estimatedCostUSD), 2) by modelAlias\n| order by [\"Estimated USD\"] desc",
+        "size": 1,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "piechart"
+      },
+      "customWidth": "50",
+      "name": "spend-by-model"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    consumer = tostring(customDimensions[\"subscriptionId\"]),\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product})\n| where estimatedCostUSD > 0\n| summarize [\"Estimated USD\"] = round(sum(estimatedCostUSD), 2) by bin(timestamp, 1d), consumer\n| order by timestamp asc",
+        "size": 1,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "barchart",
+        "chartSettings": { "seriesLabelSettings": [], "ySettings": { "numberFormatSettings": { "unit": 0, "options": { "style": "currency", "currency": "USD" } } } }
+      },
+      "customWidth": "50",
+      "name": "spend-over-time"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Token efficiency\n\nCached input tokens cost a fraction of fresh input tokens, so a rising cache-hit share is a genuine saving rather than an accounting artefact. Reasoning tokens are already counted inside completion tokens and are broken out here only to show where completion spend is going \u2014 they are never added twice." },
+      "name": "efficiency-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    modelAlias = tostring(customDimensions[\"modelAlias\"]),\n    promptTokens = toint(customDimensions[\"promptTokens\"]),\n    cachedTokens = toint(customDimensions[\"cachedTokens\"]),\n    completionTokens = toint(customDimensions[\"completionTokens\"]),\n    reasoningTokens = toint(customDimensions[\"reasoningTokens\"]),\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product})\n| summarize\n    Requests = count(),\n    [\"Prompt\"] = sum(promptTokens),\n    [\"Cached\"] = sum(cachedTokens),\n    [\"Completion\"] = sum(completionTokens),\n    [\"Reasoning\"] = sum(reasoningTokens),\n    [\"Estimated USD\"] = round(sum(iff(estimatedCostUSD > 0, estimatedCostUSD, 0.0)), 2)\n    by [\"Model alias\"] = modelAlias\n| extend [\"Cache hit share\"] = iff([\"Prompt\"] == 0, 0.0, round(todouble([\"Cached\"]) / [\"Prompt\"], 3))\n| extend [\"Reasoning share of output\"] = iff([\"Completion\"] == 0, 0.0, round(todouble([\"Reasoning\"]) / [\"Completion\"], 3))\n| extend [\"USD per 1k requests\"] = iff(Requests == 0, 0.0, round(1000.0 * [\"Estimated USD\"] / Requests, 2))\n| order by [\"Estimated USD\"] desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            { "columnMatch": "Cache hit share", "formatter": 5, "formatOptions": { "palette": "green" }, "numberFormat": { "unit": 0, "options": { "style": "percent", "maximumFractionDigits": 1 } } },
+            { "columnMatch": "Reasoning share of output", "formatter": 5, "formatOptions": { "palette": "orange" }, "numberFormat": { "unit": 0, "options": { "style": "percent", "maximumFractionDigits": 1 } } }
+          ]
+        }
+      },
+      "name": "token-efficiency"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Data quality\n\nEverything above is only as good as this section.\n\n* **Unpriced requests** used a model alias with no entry in the pricing map. The gateway reports their cost as `-1` rather than `0`, so they show up here instead of quietly vanishing into the total. Regenerate the pricing map with `scripts/generate_pricing_map.py`.\n* **Unmeasured requests** succeeded but returned no usage block \u2014 almost always a streaming client that did not set `stream_options.include_usage`. Their spend is real and entirely absent from the figures above.\n* **Pricing age** is how stale the rate card is. Azure changes published rates; a map from last quarter will drift." },
+      "name": "quality-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend\n    product = tostring(customDimensions[\"product\"]),\n    modelAlias = tostring(customDimensions[\"modelAlias\"]),\n    statusCode = toint(customDimensions[\"statusCode\"]),\n    streaming = tostring(customDimensions[\"streaming\"]) =~ \"True\",\n    usageMeasured = tostring(customDimensions[\"usageMeasured\"]) =~ \"True\",\n    estimatedCostUSD = todouble(customDimensions[\"estimatedCostUSD\"])\n| where \"*\" in ({Product}) or product in ({Product})\n| summarize\n    Requests = count(),\n    Unpriced = countif(estimatedCostUSD < 0),\n    [\"Unmeasured (success)\"] = countif(statusCode between (200 .. 299) and not(usageMeasured)),\n    [\"Streaming\"] = countif(streaming)\n    by [\"Model alias\"] = modelAlias\n| extend [\"Unpriced %\"] = round(100.0 * Unpriced / Requests, 2)\n| extend [\"Unmeasured %\"] = round(100.0 * [\"Unmeasured (success)\"] / Requests, 2)\n| order by [\"Unpriced %\"] desc, [\"Unmeasured %\"] desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            { "columnMatch": "Unpriced %", "formatter": 8, "formatOptions": { "palette": "redGreen" } },
+            { "columnMatch": "Unmeasured %", "formatter": 8, "formatOptions": { "palette": "redGreen" } }
+          ]
+        }
+      },
+      "name": "data-quality"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "traces\n| where message startswith \"llm.request\"\n| extend pricingEffectiveDate = tostring(customDimensions[\"pricingEffectiveDate\"])\n| where isnotempty(pricingEffectiveDate)\n| summarize [\"Requests\"] = count() by [\"Pricing effective date\"] = pricingEffectiveDate\n| extend [\"Age (days)\"] = datetime_diff('day', now(), todatetime([\"Pricing effective date\"]))\n| order by [\"Age (days)\"] desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            { "columnMatch": "Age (days)", "formatter": 8, "formatOptions": { "palette": "greenRed" } }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "pricing-age"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let ledger = traces | where message startswith \"llm.request\" | summarize Ledger = count() by bin(timestamp, 1h);\nrequests\n| summarize Gateway = count() by bin(timestamp, 1h)\n| join kind=leftouter ledger on timestamp\n| project timestamp, [\"Gateway requests\"] = Gateway, [\"Ledger records\"] = coalesce(Ledger, 0)\n| order by timestamp asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "linechart"
+      },
+      "customWidth": "50",
+      "name": "telemetry-completeness"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### If the two lines above diverge\n\nLedger records should track gateway requests almost exactly. A persistent shortfall means chargeback is undercounting, and there are only a few causes worth checking, in order:\n\n1. The API diagnostic `sampling_percentage` has been moved off 100.\n2. The API diagnostic `verbosity` is no longer `verbose` \u2014 the `trace` policy emits nothing below that level.\n3. Requests are failing before the outbound section runs, in which case they appear in `llm.error` instead.\n\nThe first two are the usual culprits, and both look like a cost saving at the time they are made."
+      },
+      "name": "completeness-note"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "styleSettings": {},
+  "fromTemplateId": "foundry-ai-gateway-accelerator/cost-attribution"
+}

@@ -1,0 +1,49 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+.terraform.lock.hcl.bak
+
+# Lock files belong to root modules (the examples), not to shared child
+# modules. The ones under modules/ are a side effect of running
+# `terraform validate` there and would mislead consumers.
+modules/*/.terraform.lock.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Variable files may contain tenant/subscription detail or secrets
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Tooling
+.infracost/
+tfplan.json
+checkov-report.*
+tflint-report.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local scratch
+scratch/
+*.local.*
