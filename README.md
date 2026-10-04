@@ -127,6 +127,38 @@ Then `terraform apply`. See [`examples/03-cost-attribution`](examples/03-cost-at
 
 ---
 
+## Proof it works
+
+This is not a design sketch. Both examples were deployed to a real subscription, driven with real
+traffic, and measured. The full write-up — method, raw results, and the ten defects that only a live
+deployment could surface — is in [`docs/validation.md`](docs/validation.md).
+
+**Chargeback ledger, queried from a running deployment:** four consumers across three products, two
+Foundry regions behind one gateway.
+
+![Chargeback ledger evidence](docs/images/cost-attribution-evidence.png)
+
+**Weighted load balancing**, 200 requests against a pool configured 70 / 30 across East US and West
+Europe:
+
+```
+  REGION                   COUNT     SHARE
+  East US                    139     69.8%
+  West Europe                 60     30.2%
+```
+
+**Priority failover**, same two regions at priority 1 and 2. No request reached the secondary until
+the primary began refusing work, and every one after it did:
+
+```
+  first failure at request 33 of 70
+  requests to East US before that: 32
+  requests elsewhere before that: 0
+  requests elsewhere after that:  14
+```
+
+---
+
 ## Repository layout
 
 ```
