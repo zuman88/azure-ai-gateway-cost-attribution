@@ -1,5 +1,4 @@
 ---
-title: Azure AI Gateway & Cost Attribution for Microsoft Foundry
 description: >-
   How to run Azure API Management as a centralised AI Gateway in front of
   Microsoft Foundry and Azure OpenAI deployments, and how to attribute token

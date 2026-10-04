@@ -8,7 +8,7 @@
 # anyway, so the docs stay readable in both places without being duplicated.
 
 title: Azure AI Gateway & Cost Attribution
-tagline: Production-grade Terraform for Azure API Management in front of Microsoft Foundry models
+tagline: Microsoft Foundry on Azure API Management
 description: >-
   Reference architecture and production-grade Terraform for running Azure API
   Management as a centralised AI Gateway in front of Microsoft Foundry and
@@ -39,6 +39,42 @@ relative_links:
 
 optional_front_matter:
   remove_originals: true
+
+# Per-page titles and descriptions are assigned here rather than in YAML front
+# matter, so the documents themselves stay clean when read on github.com.
+# Without these every page would inherit the site title, and four pages sharing
+# one <title> is wasted search surface.
+defaults:
+  - scope:
+      path: architecture.md
+    values:
+      title: Architecture
+      description: >-
+        Topology, request flow and network design for Azure API Management as a
+        centralised AI Gateway in front of Microsoft Foundry models, with an
+        honest account of the limitations.
+  - scope:
+      path: cost-attribution.md
+    values:
+      title: Cost attribution and chargeback
+      description: >-
+        How to attribute Azure OpenAI token spend to the application that
+        caused it: the ledger schema, the allocation maths, and reconciliation
+        against Azure Cost Management.
+  - scope:
+      path: policies.md
+    values:
+      title: APIM policy reference
+      description: >-
+        The Azure API Management policy pipeline for an AI Gateway, section by
+        section, with the authoring rules that prevent the usual failures.
+  - scope:
+      path: operations.md
+    values:
+      title: Operations guide
+      description: >-
+        Day-2 operations: regenerating the pricing map, adding models and
+        consumers, reading the chargeback workbook, and troubleshooting.
 
 exclude:
   - Gemfile
