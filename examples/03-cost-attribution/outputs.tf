@@ -20,7 +20,7 @@ output "subscription_keys" {
 }
 
 output "chargeback_workbook_id" {
-  description = "The chargeback workbook. Open it, set the actual spend figure from Cost Management, and read the allocation."
+  description = "The chargeback workbook. Reconciliation happens here: open it, enter the actual Foundry spend for the period from Cost Management, and the workbook allocates that real figure across consumers by their share of total tokens."
   value       = module.cost_attribution.workbook_id
 }
 
@@ -32,11 +32,6 @@ output "alert_rule_ids" {
 output "ledger_query" {
   description = "KQL projection of the chargeback ledger. Start here when building reporting outside the workbook."
   value       = module.cost_attribution.ledger_query
-}
-
-output "workbook_id" {
-  description = "The chargeback workbook. Reconciliation happens here: open it, enter the actual Foundry spend for the period from Cost Management, and the workbook allocates that real figure across consumers by their share of total tokens."
-  value       = module.cost_attribution.workbook_id
 }
 
 output "reconciliation_note" {
