@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: Foundry AI Gateway Accelerator
+message: >-
+  If you use this work, please cite it using the metadata from this file.
+type: software
+authors:
+  - given-names: Muazu
+    family-names: Isah
+    affiliation: Microsoft
+repository-code: https://github.com/zuman88/foundry-ai-gateway-accelerator
+abstract: >-
+  Production-grade Terraform for running Azure API Management as a centralised
+  AI Gateway in front of Microsoft Foundry model deployments, with optional
+  per-application cost attribution and chargeback. Covers backend pools with
+  circuit breakers, managed-identity egress, Entra ID caller authentication,
+  token governance, and a per-request chargeback ledger reconciled against
+  Azure Cost Management.
+keywords:
+  - azure
+  - api-management
+  - ai-gateway
+  - terraform
+  - finops
+  - llmops
+license: MIT

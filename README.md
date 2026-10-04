@@ -223,7 +223,7 @@ The quickstart example is deliberately cheap. Approximate monthly cost of the *p
 | Managed Redis (semantic cache) | disabled | from ~$40 |
 | Private endpoints | none | ~$8 each |
 
-Run `terraform plan` with [Infracost](https://www.infracost.io/) for a real figure; the CI workflow includes an optional Infracost job.
+Run `terraform plan` with [Infracost](https://www.infracost.io/) against your own subscription for a real figure.
 
 ---
 
@@ -237,10 +237,22 @@ That last one matters more than it sounds: `templatefile()` is evaluated at plan
 
 Please report vulnerabilities as described in [SECURITY.md](SECURITY.md). Do not open a public issue for security problems.
 
+## Author
+
+Built and maintained by **Muazu Isah**, Cloud Solution Architect at Microsoft — [@zuman88](https://github.com/zuman88).
+
+This grew out of repeated customer engagements where the same problems kept surfacing: a model name hard-coded into forty services, no way to answer which team spent what, and a gateway that worked until the day one region throttled. The patterns here are the ones that held up in production, written down so the next engagement starts further along.
+
 ## License
 
 [MIT](LICENSE).
 
 ## Disclaimer
 
-This is a community accelerator, not a Microsoft product, and carries no support commitment. Gateway-computed costs are estimates intended for showback and anomaly detection. **Azure Cost Management is the authoritative source for billing.** Review [`docs/architecture.md` §10](docs/architecture.md#10-limits-and-honest-caveats) before production use.
+**This is a personal project. It is not a Microsoft product, it is not endorsed by or affiliated with Microsoft, and it carries no support commitment from Microsoft or anyone else.** Opinions and design choices here are my own and do not represent the positions, strategies, or opinions of my employer. Use it at your own risk, and review it as you would any third-party code before it touches a production subscription.
+
+Gateway-computed costs are estimates intended for showback and anomaly detection. **Azure Cost Management is the authoritative source for billing.** Read [`docs/architecture.md` §10](docs/architecture.md#10-limits-and-honest-caveats) before production use — it is an honest list of what this does not do.
+
+## Trademarks
+
+Microsoft, Azure, Microsoft Foundry, and Azure OpenAI Service are trademarks of the Microsoft group of companies. This project uses those names only to describe the Azure services it configures. It is an independent work and implies no sponsorship or endorsement. Third-party trademarks are the property of their respective owners.
