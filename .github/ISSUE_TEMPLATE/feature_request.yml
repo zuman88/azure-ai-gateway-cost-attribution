@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a capability or an improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that this does not support today? Describe the situation rather than the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: If you have a specific design in mind, describe it. If not, that is fine — the problem above is the more useful half.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried
+      description: Workarounds, or other approaches you considered and why they fall short.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - ai-gateway module
+        - cost-attribution module
+        - foundry-models module
+        - networking module
+        - observability module
+        - APIM policies
+        - Pricing scripts
+        - Examples
+        - Documentation
+        - CI
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Compatibility
+      options:
+        - label: This would change an existing module input, output, or default behaviour.

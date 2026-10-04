@@ -1,0 +1,84 @@
+name: Bug report
+description: Something behaves differently from what the documentation describes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security vulnerabilities here. See [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what occurred instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The module configuration you used, with any tenant or subscription identifiers removed.
+      render: hcl
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Terraform output
+      description: The error or plan output. Redact subscription IDs, tenant IDs, and keys.
+      render: shell
+
+  - type: input
+    id: terraform-version
+    attributes:
+      label: Terraform version
+      placeholder: "1.9.8"
+    validations:
+      required: true
+
+  - type: input
+    id: provider-versions
+    attributes:
+      label: Provider versions
+      description: From `terraform version` — azurerm and azapi in particular.
+      placeholder: "azurerm 4.x, azapi 2.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: apim-sku
+    attributes:
+      label: APIM SKU
+      description: Policy behaviour and network integration differ materially between the classic and v2 tiers.
+      options:
+        - StandardV2
+        - PremiumV2
+        - Developer
+        - Standard
+        - Premium
+        - Basic
+        - Consumption
+        - Not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: auth-mode
+    attributes:
+      label: Caller authentication mode
+      options:
+        - subscription_key
+        - entra_id
+        - both
+        - Not applicable
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed subscription IDs, tenant IDs, keys, and endpoint hostnames from everything above.
+          required: true
