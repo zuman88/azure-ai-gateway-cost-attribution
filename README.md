@@ -7,7 +7,7 @@ Production-grade **Terraform** for the two things enterprise AI platforms need t
 
 The second builds on the first and is enabled by a single flag, so you can adopt the gateway now and turn on chargeback when finance asks.
 
-[![CI](https://github.com/zuman88/foundry-ai-gateway-accelerator/actions/workflows/ci.yml/badge.svg)](https://github.com/zuman88/foundry-ai-gateway-accelerator/actions/workflows/ci.yml)
+[![CI](https://github.com/zuman88/azure-ai-gateway-cost-attribution/actions/workflows/ci.yml/badge.svg)](https://github.com/zuman88/azure-ai-gateway-cost-attribution/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Terraform](https://img.shields.io/badge/terraform-%3E%3D1.9-623CE4)](https://developer.hashicorp.com/terraform)
 
@@ -73,8 +73,8 @@ You also need quota for the Foundry model deployments you intend to create.
 ### Deploy
 
 ```bash
-git clone https://github.com/zuman88/foundry-ai-gateway-accelerator.git
-cd foundry-ai-gateway-accelerator/examples/01-quickstart
+git clone https://github.com/zuman88/azure-ai-gateway-cost-attribution.git
+cd azure-ai-gateway-cost-attribution/examples/01-quickstart
 
 az login
 az account set --subscription "<your-subscription-id>"

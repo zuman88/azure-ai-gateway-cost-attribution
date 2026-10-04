@@ -7,7 +7,7 @@ authors:
   - given-names: Muazu
     family-names: Isah
     affiliation: Microsoft
-repository-code: https://github.com/zuman88/foundry-ai-gateway-accelerator
+repository-code: https://github.com/zuman88/azure-ai-gateway-cost-attribution
 abstract: >-
   Production-grade Terraform for running Azure API Management as a centralised
   AI Gateway in front of Microsoft Foundry model deployments, with optional

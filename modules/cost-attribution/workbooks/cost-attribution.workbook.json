@@ -225,5 +225,5 @@
   ],
   "fallbackResourceIds": [],
   "styleSettings": {},
-  "fromTemplateId": "foundry-ai-gateway-accelerator/cost-attribution"
+  "fromTemplateId": "azure-ai-gateway-cost-attribution/cost-attribution"
 }
