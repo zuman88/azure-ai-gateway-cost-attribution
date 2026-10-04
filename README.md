@@ -1,6 +1,11 @@
-# Foundry AI Gateway Accelerator
+# Azure AI Gateway & Cost Attribution for Microsoft Foundry
 
-Production-grade Terraform for running **Azure API Management as a centralized AI Gateway** in front of Microsoft Foundry model deployments — with optional **per-application cost attribution and chargeback**.
+Production-grade **Terraform** for the two things enterprise AI platforms need together:
+
+1. **Azure API Management as a centralised AI Gateway** — one governed entry point for every Microsoft Foundry (Azure OpenAI) model deployment, with backend pools, circuit breakers, Entra ID authentication, and token governance.
+2. **Per-application cost attribution and chargeback** — defensible answers to *"what did each team spend on AI last month?"*, reconciled against Azure Cost Management.
+
+The second builds on the first and is enabled by a single flag, so you can adopt the gateway now and turn on chargeback when finance asks.
 
 [![CI](https://github.com/zuman88/foundry-ai-gateway-accelerator/actions/workflows/ci.yml/badge.svg)](https://github.com/zuman88/foundry-ai-gateway-accelerator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
