@@ -210,6 +210,7 @@ Both are inert in `entra_id` mode, by the mechanism described above.
 | `enable_content_safety` | `bool` | `false` |
 | `content_safety_endpoint` | `string` | `null` (validated as https) |
 | `content_safety_shield_prompt` | `bool` | `true` |
+| `content_safety_max_characters` | `number` | `10000` |
 | `content_safety_thresholds` | `object` | `{}` |
 
 ### Semantic cache

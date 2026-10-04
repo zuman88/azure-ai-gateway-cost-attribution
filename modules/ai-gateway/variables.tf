@@ -518,6 +518,28 @@ variable "content_safety_shield_prompt" {
   default     = true
 }
 
+variable "content_safety_max_characters" {
+  description = <<-EOT
+    Longest prompt, in characters, that will be submitted for content safety screening. Requests
+    above this are refused with 413 and an error naming the limit.
+
+    Azure AI Content Safety accepts at most 10,000 characters per call. Beyond that the screening
+    call fails, and API Management reports that failure as "Request failed content safety check" -
+    indistinguishable from a genuine moderation block, for a prompt that was never actually assessed.
+    Checking the length first turns that into an accurate error.
+
+    The default matches the service limit, so lower it only to refuse long prompts sooner. Raising it
+    does not raise the service's own limit and simply restores the misleading failure.
+  EOT
+  type        = number
+  default     = 10000
+
+  validation {
+    condition     = var.content_safety_max_characters > 0 && var.content_safety_max_characters <= 10000
+    error_message = "content_safety_max_characters must be between 1 and 10000, the maximum Azure AI Content Safety accepts in a single call."
+  }
+}
+
 variable "content_safety_thresholds" {
   description = "Severity threshold per harm category on the EightSeverityLevels scale. Lower is stricter; content at or above the threshold is blocked."
   type = object({

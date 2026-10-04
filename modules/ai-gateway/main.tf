@@ -581,6 +581,7 @@ resource "azurerm_api_management_api_policy" "llm" {
     enable_content_safety              = var.enable_content_safety
     content_safety_backend_id          = var.enable_content_safety ? azurerm_api_management_backend.content_safety[0].name : ""
     content_safety_shield_prompt       = var.content_safety_shield_prompt
+    content_safety_max_characters      = var.content_safety_max_characters
     content_safety_threshold_hate      = var.content_safety_thresholds.hate
     content_safety_threshold_self_harm = var.content_safety_thresholds.self_harm
     content_safety_threshold_sexual    = var.content_safety_thresholds.sexual

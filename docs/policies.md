@@ -205,6 +205,31 @@ inbound path. It is excluded for the `create-embedding` operation — running a
 text-moderation check over an embedding request costs latency and tells you
 nothing.
 
+Two things about this policy are worth knowing before you enable it, both found
+by deploying it (see [validation](validation.md)).
+
+**It authenticates as the caller's request.** `llm-content-safety` forwards
+whatever `Authorization` header is on the request when it runs. The gateway
+therefore acquires its managed-identity token in §5b, *before* this policy,
+rather than just before routing. Attach it later and the screening call goes out
+unauthenticated, Content Safety answers `401`, and API Management reports that to
+the client as a flat `403 Request failed content safety check` — identical to a
+genuine moderation block, for a prompt that was never assessed. Embeddings keep
+working throughout, because they skip this section, so the gateway looks like it
+is moderating correctly rather than like it is misconfigured.
+
+**It caps prompt length at 10,000 characters.** That is the most Azure AI Content
+Safety will assess in a single call, and an over-length prompt fails the same
+misleading way. The gateway measures the prompt first and refuses anything longer
+with `413 ContentSafetyInputTooLong`, naming the real limit and the actual
+length, so the caller shortens or chunks the input instead of hunting for
+offending words that were never there. `content_safety_max_characters` can lower
+the bound but not raise it past what the service accepts.
+
+The practical consequence: **with content safety enabled, prompts never get large
+enough to reach a long-context rate card**, so `contextTier` stays on `base`.
+Tiered pricing applies only where screening is off.
+
 ### §7 — Semantic cache lookup (conditional)
 
 `azure-openai-semantic-cache-lookup` paired with a store on the outbound path.
@@ -218,12 +243,23 @@ Semantic caching is off by default. It is the one component here that can
 change the *answers* your users receive, which is why
 [architecture.md](architecture.md) treats it as opt-in.
 
-### §8 — Backend authentication
+### §5b — Backend authentication
 
 `authentication-managed-identity` acquires a token for the Cognitive Services
-audience using the API Management instance's identity, then the policy
-**deletes** both the `api-key` and `Ocp-Apim-Subscription-Key` headers before
-forwarding. The deletion is not incidental: it ensures a caller's gateway
+audience using the API Management instance's identity and attaches it as the
+`Authorization` header.
+
+This sits early, ahead of content safety and the semantic cache, because both of
+those call Azure services themselves and reuse the header that is on the request
+at the time. Acquiring the token once up front covers all three callers — the
+moderation call, the cache's embeddings call, and the model call. Tokens are
+cached by the runtime, so there is no cost to doing it early, and there is a very
+confusing failure (see §6) in doing it late.
+
+### §8 — Stripping caller credentials
+
+The policy **deletes** both the `api-key` and `Ocp-Apim-Subscription-Key` headers
+before forwarding. The deletion is not incidental: it ensures a caller's gateway
 credential is never forwarded to the model backend, and that the only thing the
 backend ever sees is the gateway's own managed identity.
 

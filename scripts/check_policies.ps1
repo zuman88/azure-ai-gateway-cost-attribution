@@ -49,6 +49,7 @@ $llmApiBaseline = [ordered]@{
     enable_content_safety                = 'true'
     content_safety_backend_id            = '"content-safety"'
     content_safety_shield_prompt         = 'true'
+    content_safety_max_characters        = '10000'
     content_safety_threshold_hate        = '4'
     content_safety_threshold_self_harm   = '4'
     content_safety_threshold_sexual      = '4'
@@ -180,6 +181,58 @@ foreach ($case in $cases) {
         $doc = New-Object System.Xml.XmlDocument
         $doc.LoadXml($xml)
         $sections = ($doc.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq 'Element' } | ForEach-Object { $_.Name }) -join ', '
+
+        # Well-formed XML is necessary but nowhere near sufficient. API Management only allows a
+        # restricted set of .NET types inside policy expressions and rejects the entire document if
+        # one is used, with an error that never reaches the Terraform output:
+        #
+        #   Usage of type 'System.Globalization.CultureInfo' is not supported within expressions
+        #
+        # That rejection arrives from the service, so it surfaces only during apply - and only for
+        # the feature permutations that actually render the offending element, which is how an
+        # InvariantCulture argument sat in the cost-attribution path while every quickstart deploy
+        # passed. Catching the known-banned types by name here costs milliseconds and turns a
+        # three-quarter-hour round trip into an immediate failure.
+        $bannedTypes = @(
+            'System.Globalization',
+            'System.Reflection',
+            'System.IO',
+            'System.Threading',
+            'System.Diagnostics',
+            'System.Environment',
+            'System.AppDomain'
+        )
+        # Scan the policy with comments removed. A comment that explains why a type is banned names
+        # that type, and matching it would fail the very document that documents the rule. Each
+        # comment is replaced by the newlines it spanned so reported line numbers still line up with
+        # the rendered file on disk.
+        $stripped = [regex]::Replace($xml, '(?s)<!--.*?-->', {
+                param($m)
+                "`n" * ([regex]::Matches($m.Value, "`n").Count)
+            })
+        $strippedLines = $stripped -split "`n"
+
+        $hits = foreach ($banned in $bannedTypes) {
+            if ($stripped -match [regex]::Escape($banned)) { $banned }
+        }
+        if ($hits) {
+            Write-Host "[FAIL] $($case.Name): uses .NET types API Management forbids in expressions" -ForegroundColor Red
+            foreach ($hit in $hits) {
+                for ($i = 0; $i -lt $strippedLines.Count; $i++) {
+                    if ($strippedLines[$i].Contains($hit)) {
+                        Write-Host "       $hit on line $($i + 1): $($strippedLines[$i].Trim())" -ForegroundColor Red
+                        break
+                    }
+                }
+            }
+            Write-Host "       rendered output written to $out"
+            Write-Host "       the allowed list is at https://learn.microsoft.com/azure/api-management/api-management-policy-expressions#CLR-types" -ForegroundColor DarkGray
+            Write-Host "       for invariant number formatting just drop the culture argument - policy" -ForegroundColor DarkGray
+            Write-Host "       expressions already format with the invariant culture." -ForegroundColor DarkGray
+            $failed++
+            continue
+        }
+
         Write-Host "[ OK ] $($case.Name): $($xml.Length) chars, sections: $sections" -ForegroundColor Green
     }
     catch {

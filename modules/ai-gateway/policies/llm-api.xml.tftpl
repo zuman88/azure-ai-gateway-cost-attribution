@@ -329,13 +329,93 @@
         remaining-tokens-header-name="x-ai-tokens-remaining" />
 %{ endif ~}
 
+    <!-- ============================================================================================
+         5b. Acquire the backend credential
+         The token is obtained here, before content safety and the cache, rather than immediately
+         before routing - and the ordering is load-bearing, not stylistic.
+
+         llm-content-safety calls Azure AI Content Safety over a named backend and forwards the
+         request's current Authorization header to it. Acquiring the token later meant that call went
+         out unauthenticated and the service answered:
+
+           401 Access denied due to invalid subscription key or wrong API endpoint.
+
+         API Management surfaces that to the caller as a flat 403 "Request failed content safety
+         check", which reads exactly like a prompt that was moderated and blocked. Every generative
+         request failed that way while embeddings, which skip content safety, kept working - so the
+         gateway looked like it was moderating correctly rather than like it was misconfigured.
+
+         Acquiring the token once, up front, covers the content safety call, the embeddings call made
+         by the semantic cache, and the model call itself. Tokens are cached by the runtime, so there
+         is no extra cost to doing it early.
+         ============================================================================================ -->
+    <authentication-managed-identity resource="${backend_auth_resource}"
+                                     output-token-variable-name="backendToken"
+                                     ignore-error="false" />
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables["backendToken"])</value>
+    </set-header>
+
 %{ if enable_content_safety ~}
     <!-- ============================================================================================
          6. Inbound content safety
          Applied to generative operations only. Embeddings are excluded: moderating an embedding input
          adds latency and per-transaction cost without meaningfully reducing risk.
          ============================================================================================ -->
+    <!-- Measures what content safety will be asked to read: the concatenated message content, which
+         is what the policy submits. Multimodal content arrives as an array rather than a string, so
+         this stringifies whatever is there instead of assuming a string and throwing on an image
+         part. Counted once here so the check below is a comparison rather than a second parse. -->
+    <set-variable name="promptCharacters" value='@{
+        var body = context.Variables["requestBody"] as JObject;
+        if (body == null) { return 0; }
+        var messages = body["messages"] as JArray;
+        if (messages == null) { return 0; }
+        var total = 0;
+        foreach (var message in messages)
+        {
+            var content = message["content"];
+            if (content != null) { total += content.ToString().Length; }
+        }
+        return total;
+    }' />
+    <!-- Azure AI Content Safety accepts at most 10,000 characters of text per call. A longer prompt
+         does not come back as "unsafe" - the call itself fails, and llm-content-safety reports that
+         failure the same way it reports a genuine moderation block, so the caller is told its prompt
+         "failed content safety check". Measured against this deployment: 9,266 characters returned
+         200, 11,294 characters returned 403.
+
+         That is the worst possible answer. The prompt was never assessed, nothing was unsafe, and the
+         person reading the error goes looking for offending words in a document that does not contain
+         any. It also lands hardest on exactly the traffic these long-context models exist to serve.
+
+         The limit is a property of the moderation service, so it cannot be raised from here and the
+         request still has to be refused. What this does is refuse it honestly: a 413 that names the
+         real constraint and the actual length, which is the difference between a caller who shortens
+         or chunks the input and one who files a bug about a false positive. -->
     <choose>
+      <when condition='@(context.Operation.Id != "create-embedding" &amp;&amp; (int)context.Variables["promptCharacters"] > ${content_safety_max_characters})'>
+        <return-response>
+          <set-status code="413" reason="Payload Too Large" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+              return new JObject(
+                  new JProperty("error", new JObject(
+                      new JProperty("code", "ContentSafetyInputTooLong"),
+                      new JProperty("message",
+                          "The prompt is " + ((int)context.Variables["promptCharacters"]).ToString() +
+                          " characters. Content safety screening is enabled on this gateway and cannot " +
+                          "assess more than ${content_safety_max_characters} characters, so the request was not " +
+                          "sent to the model. This is a size limit, not a moderation decision - the " +
+                          "content was never judged unsafe. Shorten the prompt or split it into chunks."),
+                      new JProperty("promptCharacters", (int)context.Variables["promptCharacters"]),
+                      new JProperty("limit", ${content_safety_max_characters})))
+              ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
       <when condition='@(context.Operation.Id != "create-embedding")'>
         <llm-content-safety backend-id="${content_safety_backend_id}" shield-prompt="${content_safety_shield_prompt}">
           <categories output-type="EightSeverityLevels">
@@ -377,17 +457,12 @@
 %{ endif ~}
 
     <!-- ============================================================================================
-         8. Authenticate to Foundry with the gateway's managed identity
-         Combined with local_auth_enabled = false on the Foundry accounts, this makes key-based access
-         impossible rather than merely unused. The inbound api-key header is stripped so a client
-         cannot smuggle its own credential through to the backend.
+         8. Strip any client-supplied backend credential
+         The gateway's own managed identity token was already attached in 5b; combined with
+         local_auth_enabled = false on the Foundry accounts, that makes key-based access impossible
+         rather than merely unused. What is left to do here is discard any api-key or subscription key
+         the client sent, so a caller cannot smuggle its own credential through to the backend.
          ============================================================================================ -->
-    <authentication-managed-identity resource="${backend_auth_resource}"
-                                     output-token-variable-name="backendToken"
-                                     ignore-error="false" />
-    <set-header name="Authorization" exists-action="override">
-      <value>@("Bearer " + (string)context.Variables["backendToken"])</value>
-    </set-header>
     <set-header name="api-key" exists-action="delete" />
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
 
@@ -662,6 +737,17 @@
       <metadata name="deployment" value='@((string)context.Variables["targetDeployment"])' />
       <metadata name="backendModel" value='@((string)context.Variables["backendModel"])' />
       <metadata name="pool" value='@((string)context.Variables["targetPool"])' />
+      <!-- The serving region, straight from the backend. pool and deployment are chosen before
+           routing and so are identical for every member of a load-balanced pool; this is the only
+           field that records where the request actually landed. It turns "is the 70/30 split real"
+           and "did failover engage" into a one-line query instead of guesswork.
+
+           Named backendRegion, not region, because API Management already attaches a Region property
+           of its own carrying the gateway's region. Two properties differing only in case is a trap:
+           the query that reports where traffic went and the query that reports where the gateway runs
+           would look almost identical and silently answer different questions. Some clients cannot
+           even load such a record - PowerShell's JSON parser rejects the object outright. -->
+      <metadata name="backendRegion" value='@(context.Response.Headers.GetValueOrDefault("x-ms-region", "unknown"))' />
       <metadata name="statusCode" value="@(context.Response.StatusCode.ToString())" />
       <metadata name="streaming" value='@(((bool)context.Variables["isStreaming"]).ToString())' />
       <metadata name="usageMeasured" value='@(((bool)context.Variables["usageMeasured"]).ToString())' />
@@ -672,7 +758,15 @@
       <metadata name="completionTokens" value='@(((int)context.Variables["completionTokens"]).ToString())' />
       <metadata name="reasoningTokens" value='@(((int)context.Variables["reasoningTokens"]).ToString())' />
       <metadata name="totalTokens" value='@(((int)context.Variables["totalTokens"]).ToString())' />
-      <metadata name="estimatedCostUSD" value='@(((double)context.Variables["estimatedCostUSD"]).ToString("R", System.Globalization.CultureInfo.InvariantCulture))' />
+      <!-- F8, and deliberately without an explicit culture. API Management rejects the whole policy
+           document with "Usage of type 'System.Globalization.CultureInfo' is not supported within
+           expressions", so the usual InvariantCulture argument cannot be passed here; the expression
+           runtime already formats with the invariant culture, so the decimal separator is a point
+           regardless of where the service is deployed. Eight places is far below the smallest
+           per-request cost this prices (a ten-token embedding is around 1.3e-6 USD) while avoiding
+           the scientific notation that "R" can emit and that a consumer of this field would then
+           have to parse. -->
+      <metadata name="estimatedCostUSD" value='@(((double)context.Variables["estimatedCostUSD"]).ToString("F8"))' />
       <metadata name="pricingEffectiveDate" value='@((string)context.Variables["pricingEffectiveDate"])' />
       <!-- Which rate card priced this request. "base" for a flat-rate model; a tier name such as
            "long" when input length pushed it into a higher band. Without this a long-context bill
@@ -682,7 +776,7 @@
     </trace>
 
     <set-header name="x-ai-estimated-cost-usd" exists-action="override">
-      <value>@(((double)context.Variables["estimatedCostUSD"]).ToString("F8", System.Globalization.CultureInfo.InvariantCulture))</value>
+      <value>@(((double)context.Variables["estimatedCostUSD"]).ToString("F8"))</value>
     </set-header>
 
 %{ if enable_eventhub_audit ~}
@@ -767,6 +861,18 @@
          which is the difference between a chargeback dispute and a one-line answer. -->
     <set-header name="x-ai-consumer" exists-action="override">
       <value>@((string)context.Variables["consumerName"])</value>
+    </set-header>
+
+    <!-- Which backend actually served this request is otherwise invisible. x-ai-deployment and
+         x-ai-pool are resolved before routing, so every member of a pool reports the same pair, and
+         an operator has no way to confirm that weighted load balancing is splitting traffic the way
+         it was configured, or that priority failover moved on from a region that is throttling.
+         Foundry already states its serving region on every response, including errors. Promoting it
+         to a stable x-ai-* name keeps the signal while still dropping the vendor header below, and a
+         region is not a hostname or a resource name, so nothing sensitive is disclosed. Read this
+         before the delete. -->
+    <set-header name="x-ai-region" exists-action="override">
+      <value>@(context.Response.Headers.GetValueOrDefault("x-ms-region", "unknown"))</value>
     </set-header>
 
     <!-- Never leak backend hostnames, Foundry resource names, or upstream rate-limit internals. -->
