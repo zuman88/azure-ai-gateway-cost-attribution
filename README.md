@@ -11,6 +11,8 @@ The second builds on the first and is enabled by a single flag, so you can adopt
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Terraform](https://img.shields.io/badge/terraform-%3E%3D1.9-623CE4)](https://developer.hashicorp.com/terraform)
 
+📖 **[Read the documentation site →](https://zuman88.github.io/azure-ai-gateway-cost-attribution/)** — architecture, policy reference, cost attribution, operations, and eight architecture decision records.
+
 ---
 
 ## What you get
