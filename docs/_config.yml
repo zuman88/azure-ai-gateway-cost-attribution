@@ -1,0 +1,46 @@
+# GitHub Pages configuration.
+#
+# Source is this docs/ folder, so paths below are relative to it.
+#
+# The plugin choice matters: none of the documents here carry YAML front
+# matter, because front matter renders as an ugly table when the same files are
+# browsed on github.com. jekyll-optional-front-matter lets Jekyll process them
+# anyway, so the docs stay readable in both places without being duplicated.
+
+title: Azure AI Gateway & Cost Attribution
+tagline: Production-grade Terraform for Azure API Management in front of Microsoft Foundry models
+description: >-
+  Reference architecture and production-grade Terraform for running Azure API
+  Management as a centralised AI Gateway in front of Microsoft Foundry and
+  Azure OpenAI model deployments, with per-application cost attribution and
+  chargeback reconciled against Azure Cost Management.
+
+url: https://zuman88.github.io
+baseurl: /azure-ai-gateway-cost-attribution
+
+author: Muazu Isah
+lang: en_GB
+
+theme: jekyll-theme-primer
+
+plugins:
+  # Render .md files that have no YAML front matter.
+  - jekyll-optional-front-matter
+  # Rewrite relative links like ./policies.md so they resolve as site URLs.
+  - jekyll-relative-links
+  # <title>, meta description, Open Graph and JSON-LD. This is the SEO payload.
+  - jekyll-seo-tag
+  # sitemap.xml, which is what Google actually crawls.
+  - jekyll-sitemap
+
+relative_links:
+  enabled: true
+  collections: false
+
+optional_front_matter:
+  remove_originals: true
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
