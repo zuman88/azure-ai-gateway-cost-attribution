@@ -138,8 +138,19 @@ resource "azurerm_role_assignment" "gateway_data_plane" {
 resource "azurerm_private_endpoint" "this" {
   for_each = local.private_endpoints_enabled ? var.accounts : {}
 
-  name                = "${var.name_prefix}-pe-aif-${each.key}"
-  location            = each.value.location
+  name = "${var.name_prefix}-pe-aif-${each.key}"
+
+  # A private endpoint lives in the region of the subnet it occupies, NOT in the region of the
+  # resource it fronts. Those are usually the same and the difference never shows up - until a
+  # multi-region deployment puts a Foundry account in a second region and the apply fails with
+  # "InvalidResourceReference: ... was not found. Please make sure that the referenced resource
+  # exists, and that both resources are in the same region."
+  #
+  # Targeting across regions is supported and is exactly how several Foundry accounts sit behind one
+  # virtual network: the endpoints all land in the VNet's region and reach out to wherever the
+  # accounts are. Callers with a single-region deployment can leave this null and get the old
+  # behaviour.
+  location            = coalesce(var.private_endpoint_location, each.value.location)
   resource_group_name = var.resource_group_name
   subnet_id           = var.private_endpoint_subnet_id
 

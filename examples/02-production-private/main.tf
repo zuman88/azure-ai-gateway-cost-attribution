@@ -146,9 +146,13 @@ module "foundry" {
 
   private_endpoint_subnet_id = module.network.private_endpoint_subnet_id
   enable_private_endpoints   = true
-  private_dns_zone_ids       = module.network.private_dns_zone_ids_list
-  diagnostics_workspace_id   = module.observability.log_analytics_workspace_id
-  enable_diagnostics         = true
+
+  # The network is single-region by design, so both endpoints land in the primary region even though
+  # the secondary account is elsewhere. A private endpoint belongs to the region of its subnet.
+  private_endpoint_location = var.primary_location
+  private_dns_zone_ids      = module.network.private_dns_zone_ids_list
+  diagnostics_workspace_id  = module.observability.log_analytics_workspace_id
+  enable_diagnostics        = true
 
   gateway_principal_ids = []
 }

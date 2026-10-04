@@ -24,7 +24,14 @@ locals {
     length(azurerm_monitor_action_group.this) > 0 ? azurerm_monitor_action_group.this[0].id : null
   )
 
-  alerts_enabled = var.enable_alerts && local.action_group_id != null
+  # Whether an action group will exist, decided from the input variables alone. It deliberately does
+  # NOT consult local.action_group_id: that reads the id of a resource created in this same apply, so
+  # it is unknown at plan time, and a count derived from an unknown value makes Terraform refuse to
+  # plan the whole configuration ("Invalid count argument"). This expression is the same condition
+  # that creates azurerm_monitor_action_group.this below, so the two cannot disagree.
+  action_group_available = var.existing_action_group_id != null || length(var.alert_emails) > 0
+
+  alerts_enabled = var.enable_alerts && local.action_group_available
 
   budget_start_date = coalesce(var.budget_start_date, formatdate("YYYY-MM-01'T'00:00:00'Z'", timestamp()))
 
@@ -389,9 +396,15 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "telemetry_gap" {
     threshold               = 5
     operator                = "GreaterThan"
 
+    # Both must be 1. Azure rejects a rule with multiple evaluation periods unless the query projects
+    # a datetime 'timestamp' column, and this query deliberately does not - it collapses the whole
+    # window to a single percentage rather than producing a time series. Asking for 3 periods returns
+    # "Number of evaluation periods must be 1 for queries that do not project the 'timestamp' column"
+    # at apply time, long after every static check has passed. The other four rules here are already
+    # 1/1 for the same reason.
     failing_periods {
-      minimum_failing_periods_to_trigger_alert = 2
-      number_of_evaluation_periods             = 3
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
     }
   }
 
@@ -425,6 +438,17 @@ resource "azurerm_monitor_metric_alert" "token_burn_rate" {
     aggregation      = "Total"
     operator         = "GreaterThan"
     threshold        = var.token_rate_alert_threshold
+
+    # "Total Tokens" is a custom metric emitted by llm-emit-token-metric in the gateway policy, so it
+    # does not exist in the namespace until real traffic has flowed. Azure validates metric names at
+    # creation time and rejects the unknown name with
+    #   "Couldn't find a metric named Total Tokens ... If this metric hasn't been reported yet, use
+    #    the -skipMetricValidation flag"
+    # which makes this alert impossible to create on a fresh deployment - the alert needs the traffic
+    # and the traffic is what the alert is meant to be watching. Skipping validation is the documented
+    # answer for custom metrics that are not emitted yet; the rule simply stays dormant until the
+    # first tokens arrive.
+    skip_metric_validation = true
   }
 
   action {

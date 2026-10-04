@@ -132,6 +132,21 @@ variable "private_endpoint_subnet_id" {
   default     = null
 }
 
+variable "private_endpoint_location" {
+  description = <<-EOT
+    Region the private endpoints are created in. This must be the region of
+    private_endpoint_subnet_id, because a private endpoint occupies a subnet and a subnet belongs to
+    exactly one region.
+
+    Leave it null for a single-region deployment and each endpoint is created alongside its account.
+    Set it whenever accounts span regions but share one virtual network: the endpoints then all sit
+    in the network's region and target the accounts across regions, which is supported and is the
+    normal topology for multi-region Foundry behind a single network.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "enable_private_endpoints" {
   description = <<-EOT
     Whether to place a private endpoint in front of each Foundry account, removing its public
