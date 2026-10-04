@@ -22,7 +22,7 @@ A single, governed entry point for every Foundry model in your organization.
 - **Token governance** — per-product rate limits *and* period quotas (`llm-token-limit`), keyed per consuming application.
 - **Content safety** — `llm-content-safety` with Prompt Shield on chat and responses operations, tunable per harm category.
 - **Semantic caching** — optional, off by default, with cache hits correctly reported as savings.
-- **Observability** — Application Insights, Log Analytics, Azure Monitor token metrics, and an operations workbook.
+- **Observability** — Application Insights, Log Analytics, and per-request Azure Monitor token metrics emitted by the gateway policy.
 
 ### Layer 2 — Cost attribution
 
@@ -31,7 +31,7 @@ Answer "what did each application spend on AI last month?" — defensibly.
 - Per-request token accounting across **input, cached input, cache write, output, and reasoning** token classes.
 - Cost rates generated from the **Azure Retail Prices API**, expressed per 1 000 000 tokens, versioned with `effectiveDate`.
 - **Ratio allocation against Azure Cost Management** — gateway telemetry decides *who*, Azure decides *how much*. Immune to EA discounts, reservations, and PTU amortization.
-- A chargeback workbook, per-product budgets, spend-anomaly alerts, and a **variance alert that tells you when your pricing map has gone stale**.
+- A chargeback workbook, per-product budgets, and alerts for **unpriced models**, untiered long-context requests, unmeasured usage, product overspend, and telemetry gaps — the conditions that silently corrupt a chargeback number.
 
 ---
 
@@ -85,7 +85,7 @@ APIM provisioning takes roughly 15–45 minutes on first create, depending on ti
 ### Verify
 
 ```bash
-export AI_GATEWAY_ENDPOINT=$(terraform output -raw gateway_url)
+export AI_GATEWAY_ENDPOINT=$(terraform output -raw openai_base_url)
 export AI_GATEWAY_KEY=$(terraform output -raw demo_subscription_key)
 
 python ../../scripts/smoke_test.py
@@ -128,17 +128,19 @@ Then `terraform apply`. See [`examples/03-cost-attribution`](examples/03-cost-at
 ├── modules/
 │   ├── ai-gateway/            APIM API, products, backends, pools, policies
 │   ├── foundry-models/        Foundry accounts, model deployments, RBAC
-│   ├── observability/         Log Analytics, App Insights, diagnostics, alerts
+│   ├── observability/         Log Analytics workspace and Application Insights
 │   ├── cost-attribution/      Pricing map, chargeback workbook, budgets, reconciliation
 │   └── networking/            Optional VNet, subnets, private endpoints, private DNS
 ├── examples/
 │   ├── 01-quickstart/         Single region, public, minimal cost
 │   ├── 02-production-private/ Multi-region backends, private endpoints, WAF-ready
 │   └── 03-cost-attribution/   Layer 1 + Layer 2 with chargeback enabled
-├── tests/                     terraform test (.tftest.hcl) unit tests
-├── scripts/                   Pricing map generator, smoke test, reconciliation
-└── workbooks/                 Azure Monitor workbook definitions
+├── tests/                     Unit tests for the pricing meter matcher
+└── scripts/                   Pricing map generator, smoke test, policy render check
 ```
+
+Workbook definitions live with the module that deploys them, in
+`modules/cost-attribution/workbooks/`.
 
 ---
 
@@ -166,8 +168,7 @@ model_deployments = {
 # What clients are allowed to ask for, and how it routes.
 model_routes = {
   "gpt-chat" = {
-    deployment      = "gpt-4o"
-    api_format      = "openai"
+    deployment       = "gpt-4o"
     backend_priority = {
       "eastus-ptu" = 1
       "eastus-std" = 2

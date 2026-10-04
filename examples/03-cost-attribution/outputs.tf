@@ -34,12 +34,22 @@ output "ledger_query" {
   value       = module.cost_attribution.ledger_query
 }
 
-output "reconcile_command" {
-  description = "Compare the gateway's estimate against what Azure actually billed."
+output "workbook_id" {
+  description = "The chargeback workbook. Reconciliation happens here: open it, enter the actual Foundry spend for the period from Cost Management, and the workbook allocates that real figure across consumers by their share of total tokens."
+  value       = module.cost_attribution.workbook_id
+}
+
+output "reconciliation_note" {
+  description = "How to turn the gateway's estimate into a defensible chargeback number."
   value       = <<-EOT
-    python scripts/reconcile_costs.py \
-      --app-insights-id ${var.application_insights_id} \
-      --scope ${coalesce(var.foundry_resource_group_id, "<foundry resource group id>")} \
-      --days 30
+    The per-request cost in the ledger is an *estimate* from published retail rates. It knows nothing
+    about your EA discount, reservations or PTU amortisation, so never bill from it directly.
+
+    Instead, each period:
+      1. Read actual Foundry spend for ${coalesce(var.foundry_resource_group_id, "<foundry resource group id>")} from Cost Management.
+      2. Enter it in the workbook's ActualCostUSD parameter.
+      3. The workbook allocates that figure by each consumer's share of total tokens.
+
+    See docs/cost-attribution.md for why allocation is used instead of summing the estimates.
   EOT
 }
